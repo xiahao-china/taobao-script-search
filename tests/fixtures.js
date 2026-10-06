@@ -1,5 +1,20 @@
 export const card = (id = '1001', title = '测试商品') => `<a href="https://item.taobao.com/item.htm?id=${id}" title="${title}"><span class="innerPriceWrapper--test">¥79 .98</span></a>`;
 
+/**
+ * A browser that has just published its debug port may not have created its
+ * initial tab yet, so pages() can be briefly empty right after connectOverCDP.
+ * Tests that assert "the caller's existing tab survived" must wait for it.
+ */
+export async function firstContextPage(context, timeoutMs = 10000) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const [page] = context.pages();
+    if (page) return page;
+    if (Date.now() >= deadline) throw new Error('The browser never exposed its initial tab.');
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+}
+
 export function product({ native = false, samePrice = false, authOnClick = false, delayMs = 120 } = {}) {
   const catalog = {
     item: { itemId: '1001' },

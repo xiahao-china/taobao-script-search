@@ -5,7 +5,7 @@ description: 在 Windows 11 x64 上通过自包含 JS 和常驻 Playwright 服�
 
 # 淘宝商品查询
 
-发布包只有本文件与同目录的 `taobao.js`。使用 Windows 自带的 **PowerShell 5.1 或更新版本** 加载文件首行的启动入口，不要执行 `node taobao.js` 或 cscript，不要要求用户运行 npm、安装 Node 或下载浏览器。JS 内包含便携 Node、Playwright、webpack 构建的业务代码、便携 Chromium 和许可证。
+发布包只有本文件与同目录的 `taobao.js`。使用 Windows 自带的 **PowerShell 5.1 或更新版本** 加载文件首行的启动入口，不要执行 `node taobao.js` 或 cscript，不要要求用户运行 npm、安装 Node 或下载浏览器。JS 内包含便携 Node、Playwright、webpack 构建的业务代码和许可证；完整版还内含便携 Chromium。
 
 首次运行自动校验并解压到 `%LOCALAPPDATA%/TaobaoSearch/bundles/<内容哈希>`，后续复用；这是用户目录中的运行缓存，不安装到系统，不修改 PATH、注册表或 npm 配置，不要求管理员权限，不在用户端下载任何运行组件。运行会生成缓存、日志和浏览器资料，因此“两个文件”指分发文件，不指运行后磁盘上只能有两个文件。
 
@@ -30,6 +30,7 @@ Invoke-Taobao specs 805012477549
 Invoke-Taobao detail 805012477549 --spec-id '<上一步返回的specId>' --refresh
 Invoke-Taobao batch --file '<批量输入绝对路径.json>' --output '<结果绝对路径.json>' --refresh
 Invoke-Taobao status
+Invoke-Taobao browser info
 ```
 
 search 返回商品 itemId；specs 返回属性组、可取得的真实 SKU 与 specId；detail 使用返回的规格标识核对对应报价。不要构造不存在的 SKU 或用列表起价代替规格价。最终核价使用 --refresh。
@@ -42,11 +43,13 @@ CLI stdout 只返回最终业务 JSON；stderr 为进度和人工处理提示。
 
 优先复用本机日常 Chrome。未允许远程调试时，引导在 `chrome://inspect/#remote-debugging` 开启，连接许可出现时点允许；不关闭日常 Chrome、不清空登录资料。Chrome 尚未运行时，可打开 Chrome 并进入上述设置页。
 
-机器没有 Chrome 时自动启动内置便携 Chromium。也可显式选择：
+机器没有 Chrome 时自动启动便携内核（完整版自带；精简版需已安装内核）。也可显式选择：
 
 ```powershell
 Invoke-Taobao start --portable-browser --approval-timeout 600
 ```
+
+精简版不含内核且四类来源都未命中时，命令会以 `BROWSER_NOT_FOUND` 失败，`error.details.downloadUrls` 给出官方下载地址。此时不要自行猜测地址，按返回的地址让用户下载 `chrome-win64.zip`，再执行 `Invoke-Taobao browser install '<zip绝对路径>'`；装好后同机所有版本都复用它。`Invoke-Taobao browser info` 可查看当前解析到哪个内核。
 
 便携浏览器使用独立的长期资料目录 `%LOCALAPPDATA%/TaobaoSearch/browser-profile`；不复制日常 Chrome 的 Cookie。首次需要登录，此后复用该资料。搜索、详情和规格选择遇到登录/验证默认等待人工完成并继续原任务，等待不计入数据超时。
 

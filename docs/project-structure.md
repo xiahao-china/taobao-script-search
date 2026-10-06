@@ -19,7 +19,10 @@ taobao-script-search/
 │   │   ├── engine.js                  通用操作、缓存、批量分组
 │   │   ├── errors.js                  统一结果与错误
 │   │   └── money.js                   价格文本与口径
-│   ├── browser/session.js             日常 Chrome 连接与标签池
+│   ├── browser/
+│   │   ├── session.js                 日常 Chrome 连接与标签池
+│   │   ├── chromium.js                内核解析、官方镜像地址与缺失提示
+│   │   └── install.js                 解压用户自备内核到共享缓存
 │   ├── service/
 │   │   ├── daemon.js                  独立进程、任务队列和状态
 │   │   ├── client.js                  自动启动、SDK、后台进程
@@ -37,13 +40,14 @@ taobao-script-search/
 ├── examples/                          SDK 与批量 JSON 示例
 ├── scripts/
 │   ├── verify-live.js                 真实站点验收
-│   ├── build-release.js               两文件 Windows 11 x64 打包
+│   ├── build-release.js               两文件 Windows 11 x64 打包（full / lite）
 │   ├── audit-publish.js               暂存快照的凭据/隐私/路径审计
 │   └── probe-mtop.js                  直接 HTTP 研究探测
 ├── docs/                              架构、契约、验证、调研
 ├── packaging/                         webpack 双入口、PowerShell 启动器、JS 分发模板
 ├── skills/taobao-search/               两文件发布的 SKILL.md 源文档
-├── dist/taobao-search-win11-x64/        taobao.js + SKILL.md，忽略提交
+├── dist/taobao-search-win11-x64/        taobao.js + SKILL.md（含内核），忽略提交
+├── dist/taobao-search-win11-x64-lite/   taobao.js + SKILL.md（不含内核），忽略提交
 ├── legacy/
 │   ├── python/                        原 Python 原型、测试和采购记录
 │   ├── python-migration-draft/         未完成的旧包迁移草稿

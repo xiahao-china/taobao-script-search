@@ -34,6 +34,8 @@
     "probe:mtop": "node scripts/probe-mtop.js",
     "audit:publish": "node scripts/audit-publish.js",
     "build:win11": "node scripts/build-release.js",
+    "build:win11:full": "node scripts/build-release.js --variant=full",
+    "build:win11:lite": "node scripts/build-release.js --variant=lite",
     "test:release": "node --test --test-concurrency=1 tests/release.test.js"
   },
   "dependencies": {

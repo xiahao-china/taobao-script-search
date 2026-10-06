@@ -9,11 +9,25 @@
 
 ## 下载即用：Windows 11 x64
 
-发布目录为 `dist/taobao-search-win11-x64/`，只有 `taobao.js` 与 `SKILL.md`。JS 内含 Node 24.21.0、Playwright 1.63.0、webpack 构建的业务代码、便携 Chromium 和许可证；用户无需安装 Node、执行 npm 或安装浏览器。使用 Windows 自带 PowerShell，按同目录 SKILL.md 定义 `Invoke-Taobao`，再调用 `Invoke-Taobao search 'M3盘头螺丝' --limit 5`。
+提供两个变体，目录内都只有 `taobao.js` 与 `SKILL.md`：
 
-首次运行流式校验、解压到 `%LOCALAPPDATA%/TaobaoSearch/`；随后复用缓存与常驻服务。优先复用日常 Chrome；没有 Chrome 时使用包内浏览器，也可用 `start --portable-browser` 指定。登录和日常 Chrome 调试授权仍需人工完成。分发约 311 MiB，是包含运行时与完整浏览器的结果；运行后会产生缓存和资料目录。
+| 变体 | 目录 | 分发大小 | 内容 |
+|---|---|---|---|
+| 精简版（推荐） | `dist/taobao-search-win11-x64-lite/` | 约 55 MiB | Node 24.21.0 + Playwright 1.63.0 + 业务代码，**不含浏览器内核** |
+| 完整版 | `dist/taobao-search-win11-x64/` | 约 311 MiB | 上述内容 + 便携 Chromium 153.0.8010.12 |
 
-构建者运行 `npm.cmd run build:win11`；用户端不需要构建依赖。打包实现与限制见 [发布说明](docs/distribution.md)。
+两者都用 Windows 自带 PowerShell，按同目录 SKILL.md 定义 `Invoke-Taobao`，再调用 `Invoke-Taobao search 'M3盘头螺丝' --limit 5`；无需安装 Node、执行 npm 或安装构建依赖。
+
+首次运行流式校验、解压到 `%LOCALAPPDATA%/TaobaoSearch/`；随后复用缓存与常驻服务。浏览器按以下顺序复用，通常无需任何额外下载：
+
+1. `TAOBAO_SEARCH_BUNDLED_CHROMIUM`（完整版由启动器注入）；
+2. `taobao browser install` 装到 `%LOCALAPPDATA%/TaobaoSearch/browser/` 的内核；
+3. 本机曾解出的完整版内核（`bundles/*/browser/`）；
+4. 本机日常 Chrome，通过 CDP 连接复用登录。
+
+四者都没有时，精简版会以 `BROWSER_NOT_FOUND` 退出并给出内核下载地址；自行下载 `chrome-win64.zip` 后执行 `taobao browser install <zip路径>` 即可，此后同一台机器上的所有变体都复用它。登录和日常 Chrome 调试授权仍需人工完成。运行后会产生缓存和资料目录。
+
+构建者运行 `npm.cmd run build:win11` 同时产出两个变体，或用 `build:win11:full`、`build:win11:lite` 只构建其一。打包实现与限制见 [发布说明](docs/distribution.md)。
 
 ## 开发环境使用
 

@@ -3,6 +3,8 @@ import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { createTaobaoClient, startDaemon } from './index.js';
 import { failure, TaobaoError } from './core/errors.js';
+import { browserStatus } from './browser/chromium.js';
+import { installChromium } from './browser/install.js';
 
 const help = `淘宝查询：JavaScript / Playwright 常驻服务，无 Browser Use
   taobao start [--cdp-url 本机地址] [--approval-timeout 120]
@@ -14,8 +16,11 @@ const help = `淘宝查询：JavaScript / Playwright 常驻服务，无 Browser 
   taobao detail <商品ID> --labels '["完整规格标签"]'
   taobao batch --file examples/batch.json [--output artifacts/result.json]
   taobao job <任务ID>
+  taobao browser info
+  taobao browser install <chrome-win64.zip | 已解压目录>
   taobao stop
 查询可加 --refresh；首次查询自动启动服务。
+浏览器优先复用本机日常 Chrome；精简版不含内核，缺内核时用 browser install 安装，或改用完整版发布包。
 服务参数须在 start 时指定：--cdp-user-data-dir、--timeout、--manual-timeout、--no-wait、--max-product-tabs、--runtime-dir、--portable-browser。
 默认等待人工登录/验证，不计入数据等待超时；Ctrl+C 取消当前任务。`;
 
@@ -74,6 +79,15 @@ export async function main() {
         if (input.searches) input.searches = input.searches.map(value => typeof value === 'string' ? { keyword: value, options: { forceRefresh: true } } : { ...value, options: { ...value.options, forceRefresh: true } });
       }
       result = await client.batch(input, control);
+    } else if (operation === 'browser') {
+      // Kernel inspection and installation touch the shared cache only, so they
+      // never start or talk to the resident service.
+      const action = positionals[1] || 'info';
+      if (action === 'info') result = { ok: true, operation: 'browser', data: browserStatus(), error: null };
+      else if (action === 'install') {
+        if (!positionals[2]) throw new TaobaoError('INVALID_ARGUMENT', 'browser install 需要 chrome-win64.zip 或已解压目录的路径。');
+        result = { ok: true, operation: 'browser', data: await installChromium(positionals[2]), error: null };
+      } else throw new TaobaoError('INVALID_ARGUMENT', `未知 browser 子命令：${action}。可用：info、install。`);
     } else throw new TaobaoError('INVALID_ARGUMENT', `未知命令：${operation}`);
     process.removeListener('SIGINT', cancel);
     const rendered = JSON.stringify(result, null, 2) + '\n';

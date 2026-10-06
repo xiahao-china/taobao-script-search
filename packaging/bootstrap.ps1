@@ -23,7 +23,7 @@ try {
     try { $locked = $mutex.WaitOne(300000) } catch [Threading.AbandonedMutexException] { $locked = $true }
     if (-not $locked) { throw 'Another extraction did not finish within 5 minutes' }
     if (-not (Test-Path -LiteralPath (Join-Path $destination 'ready.json'))) {
-      [Console]::Error.WriteLine('First run: extracting embedded Node, Playwright and Chromium. No download or installation.')
+      [Console]::Error.WriteLine('__FIRST_RUN_NOTE__')
       $parent = Join-Path $root 'bundles'
       [IO.Directory]::CreateDirectory($parent) | Out-Null
       $stage = Join-Path $parent ('.partial-' + [Guid]::NewGuid().ToString('N'))
@@ -76,7 +76,7 @@ try {
     TAOBAO_SEARCH_DAEMON_ENTRY = (Join-Path $destination 'daemon.cjs')
     TAOBAO_SEARCH_RUNTIME_DIR = (Join-Path $root 'runtime')
     TAOBAO_SEARCH_CACHE_DIR = $root
-    TAOBAO_SEARCH_BUNDLED_CHROMIUM = (Join-Path $destination 'browser/chrome-win64/chrome.exe')
+    __BUNDLED_CHROMIUM_ENTRY__
   }
   $info = New-Object Diagnostics.ProcessStartInfo
   $info.FileName = Join-Path $destination 'node.exe'

@@ -14,7 +14,7 @@ Skill 源文档与已安装版本通过 `skill-creator/scripts/quick_validate.py
 
 ## 两文件发布回测
 
-报告：`artifacts/release/acceptance.json`。用仅两个文件的副本在独立中文/空格目录运行，PATH 仅保留 Windows System32，NODE_PATH 为空，依赖下载代理指向不可用地址，不使用开发项目入口。测试使用包内便携 Chromium 的离线页面；不需要日常 Chrome 登录。
+报告：`artifacts/release/acceptance.json`（完整版）与 `acceptance-lite.json`（精简版）。用仅两个文件的副本在独立中文/空格目录运行，PATH 仅保留 Windows System32，NODE_PATH 为空，依赖下载代理指向不可用地址，不使用开发项目入口。完整版测试使用包内便携 Chromium 的离线页面；精简版测试额外遮蔽 `PROGRAMFILES`/`PROGRAMFILES(X86)` 以走通缺内核分支。都不需要日常 Chrome 登录。
 
 | 用例 | 结果 |
 |---|---|
@@ -26,10 +26,13 @@ Skill 源文档与已安装版本通过 `skill-creator/scripts/quick_validate.py
 | 批量两规格与 UTF-8 输出文件 | 通过，顺序为 9.00、4.08 |
 | 多次调用的常驻服务 PID、浏览器连接和详情导航复用 | 通过，连接 1 次、商品导航 1 次 |
 | 不存在的规格返回业务错误与非零退出码 | 通过 |
-| stop 后保留原标签、Cookie 和便携浏览器进程 | 通过 |
+| stop 后保留原标签、Cookie，且浏览器 CDP 端点仍可访问 | 通过，未关闭浏览器 |
 | 修改内嵌载荷后在新缓存运行 | 通过，SHA-256 拦截并返回 BUNDLE_START_FAILED |
+| 精简版：无 `browser/` 目录、缺内核时报 `BROWSER_NOT_FOUND`、按返回地址装好内核后被复用 | 通过，报告 artifacts/release/acceptance-lite.json |
 
 测试结束仅关闭、清理测试自己的临时浏览器和目录。不是全新 Windows 虚拟机验收；它验证实际运行路径与依赖独立性。离线 fixture 报价不是当前淘宝售价。所有先前调试失败均已修复后回测，以上为最终通过结果。
+
+“stop 后保留浏览器”一项改为直接探测浏览器本身：Chromium 的 `chrome.exe` 启动后会把浏览器交给自己的浏览器进程并以 0 退出，因此 spawn 到手柄的 `exitCode` 从第一秒起就是 0，不能作为存活信号（2026-10-06 用 `.cache` 探针实测确认，系统 Chrome 与包内 Chrome for Testing 行为一致）。现在断言 `stop` 之后 CDP 端点仍返回 `/json/version`、调用方原有页面未关闭、Cookie 仍在，这三项比检查启动器进程存活更直接地覆盖同一保证。`tests/service.test.js` 的共享常驻进程用例有同一处假设（原第 65 行“Temporary Chrome exited”与第 100 行 `chrome.exitCode === null`），已按同一原则改掉，并用端点存活作为收尾清理的依据，跑完零残留浏览器进程。
 
 ## 真实站点验收
 

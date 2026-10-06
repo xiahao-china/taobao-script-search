@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `lite` release variant: `dist/taobao-search-win11-x64-lite/` ships Node,
+  Playwright and the business code but no browser kernel, cutting the download
+  from about 311 MiB to about 55 MiB. `npm run build:win11` builds both
+  variants; `build:win11:full` and `build:win11:lite` build one.
+- `taobao browser info` and `taobao browser install <chrome-win64.zip | 目录>`
+  so a user can supply a kernel themselves. `chrome-win64.zip` is unpacked into
+  `%LOCALAPPDATA%/TaobaoSearch/browser/` and shared by every variant on the
+  machine, using staging plus rename so a failed install keeps the old kernel.
+- `src/browser/chromium.js` resolves the kernel in a documented order: the
+  packaged binary, a kernel installed with `browser install`, a kernel another
+  variant already extracted into `bundles/*`, then the daily Chrome over CDP.
+
+### Changed
+
+- Missing-browser failures now raise `BROWSER_NOT_FOUND` with the official
+  Chrome for Testing and Playwright CDN download URLs in
+  `error.details.downloadUrls`, instead of pointing at
+  `chrome://inspect/#remote-debugging` on a machine that has no Chrome.
+- The release build prints elapsed time every 30s for the Chromium download,
+  compression and Base64 steps, plus Base64 progress in 10% increments.
+
 ## [0.2.0] - 2026-10-06
 
 First public release of the maintained JavaScript implementation. The earlier

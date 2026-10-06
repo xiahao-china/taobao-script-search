@@ -10,7 +10,7 @@ import { chromium } from 'playwright';
 import { discoverEndpoint, validateEndpoint } from '../src/browser/session.js';
 import { createTaobaoClient } from '../src/index.js';
 import { projectRoot } from '../src/core/config.js';
-import { card, product } from './fixtures.js';
+import { card, product, firstContextPage } from './fixtures.js';
 
 // Chrome is installed in different locations across machines, so probe the known
 // roots before falling back to the Playwright browser. A missing browser skips
@@ -46,7 +46,7 @@ test('separate CLI processes share one daemon/browser and leave existing tabs/se
   const chrome = spawn(chromeExecutable, ['--headless=new', '--no-first-run', '--no-default-browser-check', '--disable-background-networking', '--remote-debugging-port=0', `--user-data-dir=${profile}`, 'about:blank'], { windowsHide: true, stdio: 'ignore' });
   let chromeError = null;
   chrome.once('error', error => { chromeError = error; });
-  let owner, client;
+  let owner, client, endpoint;
   const cli = args => new Promise((resolveRun, reject) => {
     const child = spawn(process.execPath, [join(projectRoot, 'bin/taobao.js'), ...args, '--runtime-dir', runtimeDir], { cwd: folder, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '', stderr = '';
@@ -58,16 +58,20 @@ test('separate CLI processes share one daemon/browser and leave existing tabs/se
     });
   });
   try {
-    let endpoint;
+    // chrome.exe hands the browser off to its own browser process and exits 0
+    // within a second, so the spawn handle is not a liveness signal. Only the
+    // published CDP endpoint proves the browser came up.
     const deadline = Date.now() + 10000;
     while (Date.now() < deadline) {
       if (chromeError) throw new Error(`Could not start the test browser: ${chromeError.message}`);
-      if (chrome.exitCode !== null) throw new Error('Temporary Chrome exited');
       try { endpoint = await discoverEndpoint(profile); break; } catch { await delay(50); }
     }
     assert.ok(endpoint, 'Temporary Chrome published its debug port');
+    const endpointAlive = async () => {
+      try { return (await fetch(`http://127.0.0.1:${Number(new URL(endpoint).port)}/json/version`, { signal: AbortSignal.timeout(1500) })).ok; } catch { return false; }
+    };
     owner = await chromium.connectOverCDP(endpoint, { noDefaults: true, timeout: 10000 });
-    const context = owner.contexts()[0], original = context.pages()[0];
+    const context = owner.contexts()[0], original = await firstContextPage(context);
     await original.setContent('<title>Existing tab retained</title>');
     await context.addCookies([{ name: 'test_session', value: 'existing-session', domain: 'example.test', path: '/' }]);
     let productNavigations = 0;
@@ -97,7 +101,9 @@ test('separate CLI processes share one daemon/browser and leave existing tabs/se
     assert.equal(cached.meta.cached, true);
     assert.equal(cached.data.price.observedAt, quoted.value.data.price.observedAt);
     assert.equal((await client.stop()).ok, true);
-    assert.equal(chrome.exitCode, null);
+    // The guarantee is about the browser, not about the launcher process:
+    // stop must leave the caller's browser, tabs and session untouched.
+    assert.equal(await endpointAlive(), true, 'the browser still serves CDP after stop');
     assert.equal(original.isClosed(), false);
     assert.equal(await original.title(), 'Existing tab retained');
     assert.equal((await context.cookies('https://example.test'))[0].value, 'existing-session');
@@ -109,13 +115,16 @@ test('separate CLI processes share one daemon/browser and leave existing tabs/se
     if (saved.token) assert.ok(!JSON.stringify(quoted.value).includes(saved.token));
   } finally {
     await client?.stop().catch(() => {});
-    if (owner?.isConnected()) {
-      try { const cdp = await owner.newBrowserCDPSession(); await cdp.send('Browser.close'); } catch { /* Already stopped. */ }
-      await owner.close().catch(() => {});
-    }
-    const deadline = Date.now() + 5000;
-    while (chrome.exitCode === null && !chromeError && Date.now() < deadline) await delay(50);
-    if (chrome.exitCode === null && chrome.pid) chrome.kill();
+    try {
+      const closing = owner?.isConnected() ? owner : endpoint ? await chromium.connectOverCDP(endpoint, { noDefaults: true }) : null;
+      if (closing) {
+        const cdp = await closing.newBrowserCDPSession();
+        await cdp.send('Browser.close');
+        if (closing !== owner) await closing.close().catch(() => {});
+      }
+    } catch { /* Already stopped. */ }
+    await owner?.close().catch(() => {});
+    await delay(500);
     const cleanup = resolve(folder), temporaryRoot = resolve(tmpdir());
     assert.ok(cleanup.startsWith(temporaryRoot + sep) && cleanup.split(sep).at(-1).startsWith('taobao-service-test-'));
     await rm(cleanup, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });

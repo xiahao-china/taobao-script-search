@@ -47,8 +47,8 @@ Cookie 不导出、不写入项目，也不由 skill 传入。Chrome 自身保�
 
 ## Skill 的边界
 
-发布 Skill 只有 SKILL.md 与自包含 taobao.js。Windows 内置 PowerShell 流式加载 JS 首行入口，校验并解压内嵌 Node、Playwright、业务 bundle 和便携 Chromium，然后调用同一 CLI。应用和进程路径通过仅对子进程生效的配置注入，不引用开发项目或系统 Node。常驻进程仍负责所有浏览器操作。任务执行会话尚未完成时，调用方继续等待原会话；同商品多规格用批量输入。
+发布 Skill 只有 SKILL.md 与自包含 taobao.js。Windows 内置 PowerShell 流式加载 JS 首行入口，校验并解压内嵌 Node、Playwright、业务 bundle，以及完整版附带的便携 Chromium，然后调用同一 CLI。应用和进程路径通过仅对子进程生效的配置注入，不引用开发项目或系统 Node。常驻进程仍负责所有浏览器操作。任务执行会话尚未完成时，调用方继续等待原会话；同商品多规格用批量输入。
 
-只发布 Windows 11 x64；用户无需 npm 或额外运行环境。缓存位于 LOCALAPPDATA/TaobaoSearch，按 payload SHA-256 分版本；并发首次运行用用户会话 mutex 保护，先完整校验再原子移动到可运行目录。JS 约 311 MiB，内置浏览器造成大部分体积。PowerShell 加载器避免 JScript 对大文件的限制。详见 [分发说明](distribution.md)。
+只发布 Windows 11 x64；用户无需 npm 或额外运行环境。缓存位于 LOCALAPPDATA/TaobaoSearch，按 payload SHA-256 分版本；并发首次运行用用户会话 mutex 保护，先完整校验再原子移动到可运行目录。发布分两个变体：完整版约 311 MiB，体积几乎全部来自内置 Chromium；精简版约 55 MiB，不含内核，复用本机 Chrome 或用户用 `browser install` 自备的内核。PowerShell 加载器避免 JScript 对大文件的限制。详见 [分发说明](distribution.md)。
 
 实现依据：[Playwright CDP 与 noDefaults](https://playwright.dev/docs/api/class-browsertype#browser-type-connect-over-cdp)、[Playwright 条件等待](https://playwright.dev/docs/api/class-page#page-wait-for-function)。淘宝适配器的当前可用性由真实验收记录支持，不能由模拟测试推断所有商品页面都兼容。

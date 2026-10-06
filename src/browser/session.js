@@ -1,10 +1,10 @@
 import { readFile } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
 import { join } from 'node:path';
 import { chromium } from 'playwright';
 import { TaobaoError } from '../core/errors.js';
+import { resolveBundledChromium, systemChromePath, profileDirectory, browserNotFoundError, portableBrowserUnavailableError } from './chromium.js';
 
 export function validateEndpoint(endpoint) {
   let url;
@@ -60,21 +60,23 @@ export class BrowserSession {
   }
 
   async endpoint() {
-    const bundled = process.env.TAOBAO_SEARCH_BUNDLED_CHROMIUM;
-    const installed = [process.env.PROGRAMFILES, process.env['PROGRAMFILES(X86)'], process.env.LOCALAPPDATA]
-      .filter(Boolean).some(folder => existsSync(join(folder, 'Google/Chrome/Application/chrome.exe')));
+    const bundled = resolveBundledChromium();
+    const installed = Boolean(systemChromePath());
     if (!bundled || (!this.options.portableBrowser && (installed || this.options.userDataDir))) {
-      if (this.options.portableBrowser && !bundled) throw new TaobaoError('BROWSER_NOT_FOUND', '--portable-browser 仅在自包含发布包中可用。');
+      if (this.options.portableBrowser && !bundled) throw portableBrowserUnavailableError();
+      // Reusing the daily Chrome is the default path; only a machine with
+      // neither Chrome nor a portable kernel has nothing to attach to.
+      if (!installed && !this.options.userDataDir) throw browserNotFoundError();
       return discoverEndpoint(this.options.userDataDir);
     }
-    const profile = join(process.env.TAOBAO_SEARCH_CACHE_DIR || join(process.env.LOCALAPPDATA, 'TaobaoSearch'), 'browser-profile');
+    const profile = profileDirectory();
     try {
       const existing = await discoverEndpoint(profile);
       const response = await fetch(`http://127.0.0.1:${new URL(existing).port}/json/version`, { signal: AbortSignal.timeout(1000) });
       const published = response.ok ? await response.json() : null;
       if (published?.webSocketDebuggerUrl === existing) return existing;
     } catch { /* A closed/crashed browser can leave a stale port file. */ }
-    this.onEvent({ state: 'connecting', message: '正在启动包内便携浏览器；首次使用请在该浏览器登录淘宝。' });
+    this.onEvent({ state: 'connecting', message: '正在启动便携内核；首次使用请在该浏览器登录淘宝。' });
     const child = spawn(bundled, ['--remote-debugging-port=0', `--user-data-dir=${profile}`, '--no-first-run', '--no-default-browser-check', 'about:blank'], { detached: true, windowsHide: true, stdio: 'ignore' });
     let launchError;
     child.on('error', error => { launchError = error; });
@@ -89,7 +91,7 @@ export class BrowserSession {
       } catch { /* Port file may still refer to the previous process. */ }
       await delay(100);
     }
-    throw new TaobaoError('BROWSER_START_FAILED', '包内浏览器未发布调试端口。');
+    throw new TaobaoError('BROWSER_START_FAILED', '便携内核未发布调试端口。');
   }
 
   async getSearchPage() {

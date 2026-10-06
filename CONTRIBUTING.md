@@ -23,10 +23,12 @@ SKU price with the search-list price. Add a mocked fixture for a new layout or
 regression; avoid tests that require a real login, seller interaction or order.
 
 Before committing, run `npm run audit:publish`. This checks the staged Git
-snapshot; stage intended files first. A scanner finding must be investigated,
-not hidden by ignoring a whole source directory. Use Gitleaks as an additional
-secret scan. Never attach Cookies, storage state, HARs, browser profiles,
-credentials, daemon manifests or unredacted product/session payloads to an issue.
+snapshot; stage intended files first. `npm run audit:publish -- --ref HEAD`
+checks a committed tree instead, which is how CI audits a push. A scanner
+finding must be investigated, not hidden by ignoring a whole source directory.
+Use [Gitleaks](https://github.com/gitleaks/gitleaks) as an additional secret
+scan. Never attach Cookies, storage state, HARs, browser profiles, credentials,
+daemon manifests or unredacted product/session payloads to an issue.
 
 Pull requests should explain the trigger, changed behavior, and relevant checks.
 Keep unrelated formatting and dependency updates separate. User-visible API

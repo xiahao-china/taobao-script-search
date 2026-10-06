@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { join, resolve, sep } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -11,17 +12,40 @@ import { createTaobaoClient } from '../src/index.js';
 import { projectRoot } from '../src/core/config.js';
 import { card, product } from './fixtures.js';
 
+// Chrome is installed in different locations across machines, so probe the known
+// roots before falling back to the Playwright browser. A missing browser skips
+// this test instead of reporting a false failure.
+function resolveChrome() {
+  const roots = [process.env['PROGRAMFILES(X86)'], process.env.PROGRAMFILES, process.env.LOCALAPPDATA];
+  for (const root of roots) {
+    if (!root) continue;
+    const candidate = join(root, 'Google/Chrome/Application/chrome.exe');
+    if (existsSync(candidate)) return candidate;
+  }
+  try {
+    const bundled = chromium.executablePath();
+    if (bundled && existsSync(bundled)) return bundled;
+  } catch { /* No Playwright browser installed. */ }
+  return null;
+}
+
+const chromeExecutable = resolveChrome();
+
 test('CDP endpoint restrictions reject remote hosts and credentials', () => {
   assert.equal(validateEndpoint('http://127.0.0.1:9222'), 'http://127.0.0.1:9222');
   assert.throws(() => validateEndpoint('ws://example.com:9222'), { code: 'INVALID_ARGUMENT' });
   assert.throws(() => validateEndpoint('ws://name:password@localhost:9222'), { code: 'INVALID_ARGUMENT' });
 });
 
-test('separate CLI processes share one daemon/browser and leave existing tabs/session after stop', { timeout: 45000 }, async () => {
+test('separate CLI processes share one daemon/browser and leave existing tabs/session after stop', {
+  timeout: 45000,
+  skip: chromeExecutable ? false : 'No Chrome or Playwright Chromium found for the shared-daemon test.',
+}, async () => {
   const folder = await mkdtemp(join(tmpdir(), 'taobao-service-test-'));
   const profile = join(folder, 'chrome'), runtimeDir = join(folder, 'runtime');
-  const executable = join(process.env['PROGRAMFILES(X86)'] || 'C:\\Program Files (x86)', 'Google/Chrome/Application/chrome.exe');
-  const chrome = spawn(executable, ['--headless=new', '--no-first-run', '--no-default-browser-check', '--disable-background-networking', '--remote-debugging-port=0', `--user-data-dir=${profile}`, 'about:blank'], { windowsHide: true, stdio: 'ignore' });
+  const chrome = spawn(chromeExecutable, ['--headless=new', '--no-first-run', '--no-default-browser-check', '--disable-background-networking', '--remote-debugging-port=0', `--user-data-dir=${profile}`, 'about:blank'], { windowsHide: true, stdio: 'ignore' });
+  let chromeError = null;
+  chrome.once('error', error => { chromeError = error; });
   let owner, client;
   const cli = args => new Promise((resolveRun, reject) => {
     const child = spawn(process.execPath, [join(projectRoot, 'bin/taobao.js'), ...args, '--runtime-dir', runtimeDir], { cwd: folder, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -37,6 +61,7 @@ test('separate CLI processes share one daemon/browser and leave existing tabs/se
     let endpoint;
     const deadline = Date.now() + 10000;
     while (Date.now() < deadline) {
+      if (chromeError) throw new Error(`Could not start the test browser: ${chromeError.message}`);
       if (chrome.exitCode !== null) throw new Error('Temporary Chrome exited');
       try { endpoint = await discoverEndpoint(profile); break; } catch { await delay(50); }
     }
@@ -89,8 +114,8 @@ test('separate CLI processes share one daemon/browser and leave existing tabs/se
       await owner.close().catch(() => {});
     }
     const deadline = Date.now() + 5000;
-    while (chrome.exitCode === null && Date.now() < deadline) await delay(50);
-    if (chrome.exitCode === null) chrome.kill();
+    while (chrome.exitCode === null && !chromeError && Date.now() < deadline) await delay(50);
+    if (chrome.exitCode === null && chrome.pid) chrome.kill();
     const cleanup = resolve(folder), temporaryRoot = resolve(tmpdir());
     assert.ok(cleanup.startsWith(temporaryRoot + sep) && cleanup.split(sep).at(-1).startsWith('taobao-service-test-'));
     await rm(cleanup, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });

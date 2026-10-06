@@ -3,7 +3,8 @@
  *
  * Stage the files you intend to publish, then run `npm run audit:publish`.
  * The script reads the staged blobs (not the working tree) so that exactly what
- * would be committed is checked. It is dependency-free and read-only.
+ * would be committed is checked. Pass `--ref <rev>` to audit a committed tree
+ * instead, which is what CI does. It is dependency-free and read-only.
  *
  * It fails on: credentials and session material, personal data, absolute paths
  * from the maintainer's machine, and generated or private directories that are
@@ -106,24 +107,53 @@ function git(args, options = {}) {
   }
 }
 
+/**
+ * Which snapshot to audit. `--ref <rev>` audits a committed tree (used by CI);
+ * without arguments the staged index is audited, which is what a contributor
+ * checks before committing.
+ */
+function selectSnapshot(argv) {
+  const flag = argv.findIndex(value => value === '--ref' || value.startsWith('--ref='));
+  if (flag === -1) {
+    return {
+      label: 'staged index',
+      list: () => git(['diff', '--cached', '--name-only', '--diff-filter=ACMR', '-z']),
+      read: path => git(['show', `:${path}`]),
+    };
+  }
+  const argument = argv[flag];
+  const rev = argument.includes('=') ? argument.slice(argument.indexOf('=') + 1) : argv[flag + 1];
+  if (!rev) {
+    console.error('--ref needs a revision, for example --ref HEAD.');
+    process.exit(2);
+  }
+  const resolved = git(['rev-parse', '--verify', `${rev}^{commit}`]).trim();
+  return {
+    label: `${rev} (${resolved.slice(0, 12)})`,
+    list: () => git(['ls-tree', '-r', '--name-only', '-z', resolved]),
+    read: path => git(['show', `${resolved}:${path}`]),
+  };
+}
+
 function main() {
-  const files = git(['diff', '--cached', '--name-only', '--diff-filter=ACMR', '-z'])
+  const snapshot = selectSnapshot(process.argv.slice(2));
+  const files = snapshot.list()
     .split('\0')
     .filter(Boolean)
     .map(value => value.replace(/\\/g, '/'));
 
   if (files.length === 0) {
-    console.error('No staged files. Stage the intended files first, then re-run.');
+    console.error(`Nothing to audit in the ${snapshot.label}. Stage the intended files first, or pass --ref <rev>.`);
     process.exit(1);
   }
 
   const findings = [];
   for (const path of files) {
-    findings.push(...scanFile(path, git(['show', `:${path}`])));
+    findings.push(...scanFile(path, snapshot.read(path)));
   }
 
   if (findings.length > 0) {
-    console.error(`Publication audit failed: ${findings.length} finding(s).\n`);
+    console.error(`Publication audit failed: ${findings.length} finding(s) in the ${snapshot.label}.\n`);
     for (const item of findings) {
       const where = item.line > 0 ? `${item.path}:${item.line}` : item.path;
       console.error(`  ${where}  [${item.kind}]`);
@@ -133,7 +163,7 @@ function main() {
     process.exit(1);
   }
 
-  console.log(`Publication audit passed: ${files.length} staged file(s) clear.`);
+  console.log(`Publication audit passed: ${files.length} file(s) clear in the ${snapshot.label}.`);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) main();

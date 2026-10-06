@@ -55,8 +55,8 @@ jobs:
         with:
           node-version: 24
 
-      - name: Check the tracked snapshot
-        run: git add -A && npm run audit:publish
+      - name: Audit the committed snapshot
+        run: npm run audit:publish -- --ref HEAD
 
   secrets:
     name: Secret scan

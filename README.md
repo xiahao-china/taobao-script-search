@@ -74,7 +74,7 @@ node scripts/verify-live.js
 git add -A; npm.cmd run audit:publish
 ```
 
-无需下载额外 Chromium；使用已安装 Chrome。最后一条会访问真实淘宝并核验示例商品；普通测试使用离线页面和独立临时 Chrome，不读取日常浏览器的 Cookie。`audit:publish` 检查暂存快照里的凭据、个人数据和本机路径，提交前先暂存目标文件。
+无需下载额外 Chromium；使用已安装 Chrome。最后一条会访问真实淘宝并核验示例商品；普通测试使用离线页面和独立临时 Chrome，不读取日常浏览器的 Cookie。`audit:publish` 检查暂存快照里的凭据、个人数据和本机路径，提交前先暂存目标文件；`npm run audit:publish -- --ref HEAD` 改为审计已提交树（CI 用法）。
 
 服务参数在首次启动时生效；修改配置先 `stop` 再 `start`。常用参数见 `node bin/taobao.js --help`。
 

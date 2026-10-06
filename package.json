@@ -1,0 +1,45 @@
+{
+  "name": "taobao-script-search",
+  "version": "0.2.0",
+  "private": true,
+  "description": "Persistent Playwright JavaScript service for Taobao product queries",
+  "keywords": [
+    "taobao",
+    "playwright",
+    "scraper",
+    "search",
+    "cli",
+    "cdp"
+  ],
+  "license": "MIT",
+  "author": "xiahao-china",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/xiahao-china/taobao-script-search.git"
+  },
+  "bugs": {
+    "url": "https://github.com/xiahao-china/taobao-script-search/issues"
+  },
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "exports": "./src/index.js",
+  "bin": {
+    "taobao": "./bin/taobao.js"
+  },
+  "scripts": {
+    "taobao": "node bin/taobao.js",
+    "test": "node --test --test-concurrency=1 tests/*.test.js",
+    "probe:mtop": "node scripts/probe-mtop.js",
+    "audit:publish": "node scripts/audit-publish.js",
+    "build:win11": "node scripts/build-release.js",
+    "test:release": "node --test --test-concurrency=1 tests/release.test.js"
+  },
+  "dependencies": {
+    "playwright": "1.63.0"
+  },
+  "devDependencies": {
+    "webpack": "5.111.1"
+  }
+}

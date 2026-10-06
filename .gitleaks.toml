@@ -1,0 +1,4 @@
+title = "Taobao Script Search publication scan"
+
+[extend]
+useDefault = true

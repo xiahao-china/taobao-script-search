@@ -1,0 +1,24 @@
+name: Bug report
+description: Report a query, browser connection, or packaging issue
+body:
+  - type: markdown
+    attributes:
+      value: Do not upload Cookies, passwords, browser profiles, HARs, or daemon manifests. Redact logs first.
+  - type: input
+    id: version
+    attributes:
+      label: Release version and Windows version
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Include the operation and expected/actual behavior. A public product ID is enough; no session data.
+    validations:
+      required: true
+  - type: textarea
+    id: error
+    attributes:
+      label: Error code and redacted output
+      render: json

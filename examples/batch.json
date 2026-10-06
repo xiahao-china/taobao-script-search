@@ -1,0 +1,16 @@
+{
+  "searches": [
+    { "keyword": "M3盘头螺丝", "options": { "limit": 5 } },
+    { "keyword": "M4 内六角 长螺丝", "options": { "limit": 5 } }
+  ],
+  "products": [
+    {
+      "itemId": "805012477549",
+      "specs": [
+        { "labels": ["M3*10(200个)"] },
+        { "labels": ["M3*6(500个)"] },
+        { "labels": ["M3*20(100个)"] }
+      ]
+    }
+  ]
+}

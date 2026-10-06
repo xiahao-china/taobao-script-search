@@ -1,0 +1,59 @@
+# Local dependencies, caches and generated releases (publish binaries in Releases).
+node_modules/
+/.cache/
+/dist/
+/artifacts/
+coverage/
+logs/
+tmp/
+*.log
+*.tsbuildinfo
+*.zip
+*.tgz
+.eslintcache
+
+# Editor and agent tooling state (local only).
+/.workbuddy/
+
+# Browser sessions, authentication and personal archives: never publish.
+/.runtime/
+/.profiles/
+/.session/
+/legacy/
+**/browser-profile/
+**/User Data/
+**/DevToolsActivePort
+**/daemon.json
+**/storage-state*.json
+**/storageState*.json
+**/cookies*.json
+**/Cookies
+**/Login Data
+**/Local State
+*.har
+*.db
+*.sqlite*
+
+# Secrets; the sanitized example configuration is the only exception.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+credentials*.json
+secrets*.json
+id_rsa*
+id_ed25519*
+
+# Editors, OS metadata and old Python development environments.
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+Desktop.ini
+.venv/
+__pycache__/
+*.py[cod]

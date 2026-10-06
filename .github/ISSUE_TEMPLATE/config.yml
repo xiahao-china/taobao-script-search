@@ -1,0 +1,11 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security or privacy report
+    url: https://github.com/xiahao-china/taobao-script-search/security/advisories/new
+    about: Report a vulnerability or a leaked credential privately, never in a public issue.
+  - name: Usage and architecture docs
+    url: https://github.com/xiahao-china/taobao-script-search/tree/main/docs
+    about: Read the architecture, API contract, distribution and validation notes before filing.
+  - name: Contributing guide
+    url: https://github.com/xiahao-china/taobao-script-search/blob/main/CONTRIBUTING.md
+    about: Local setup, checks to run, and what must not be committed.

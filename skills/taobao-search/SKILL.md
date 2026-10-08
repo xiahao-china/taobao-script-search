@@ -51,7 +51,7 @@ Invoke-Taobao start --portable-browser --approval-timeout 600
 
 精简版不含内核且四类来源都未命中时，命令会以 `BROWSER_NOT_FOUND` 失败，`error.details.downloadUrls` 给出官方下载地址。此时不要自行猜测地址，按返回的地址让用户下载 `chrome-win64.zip`，再执行 `Invoke-Taobao browser install '<zip绝对路径>'`；装好后同机所有版本都复用它。`Invoke-Taobao browser info` 可查看当前解析到哪个内核。
 
-便携浏览器使用独立的长期资料目录 `%LOCALAPPDATA%/TaobaoSearch/browser-profile`；不复制日常 Chrome 的 Cookie。首次需要登录，此后复用该资料。搜索、详情和规格选择遇到登录/验证默认等待人工完成并继续原任务，等待不计入数据超时。滑块验证弹窗（"请推动/拖动滑块完成验证"）会被自动识别：任务暂停、stderr 提示人工处理，不会反复导航触发更严风控；验证通过后若页面自动恢复结果，任务原地继续读取，不再重新发起导航。
+便携浏览器使用独立的长期资料目录 `%LOCALAPPDATA%/TaobaoSearch/browser-profile`；不复制日常 Chrome 的 Cookie。首次需要登录，此后复用该资料。搜索、详情和规格选择遇到登录/验证默认等待人工完成并继续原任务，等待不计入数据超时。滑块验证弹窗（"请推动/拖动滑块完成验证"）会被自动识别：任务暂停、stderr 提示人工处理，不会反复导航触发更严风控；验证通过后若页面自动恢复结果，任务原地继续读取，不再重新发起导航。sufei punish 拦截页还可能以跨域 iframe（`_____tmd_____/punish`，标题"验证码拦截"，滑块在 iframe 内）出现，同样按验证墙处理：自动识别、暂停等待人工拖动，iframe 消失后原地恢复，全程不导航。
 
 如果执行工具返回仍在运行的 session_id，继续等待原执行会话，不要重复提交。job <jobId> 可获取原任务状态/结果；status 检查服务。stop 断开服务连接，不关闭日常或便携浏览器。浏览器未登录时不能声称已核验商品。
 

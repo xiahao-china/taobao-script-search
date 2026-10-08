@@ -39,6 +39,9 @@ export class SearchAdapter {
         // visible "page jumping" loop. Read the current page first; only leave
         // for the target URL when the resume did not land there.
         const resumed = await snapshot(page, 'search', args).catch(() => null);
+        // A wall that re-appeared (e.g. a fresh punish iframe) must send us
+        // back into the wait loop, never into a navigation.
+        if (['needs_login', 'needs_verification'].includes(resumed?.status)) continue;
         if (resumed?.status !== 'ok') await navigate(page, target, this.options.timeoutMs);
         // The manual wait must not eat into the data budget: a slow human slide
         // would otherwise leave no time to read the restored page.

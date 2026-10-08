@@ -102,6 +102,34 @@ test('a baxia slider dialog pauses navigation instead of fighting the wall', asy
   assert.ok(events.some(event => event.state === 'needs_verification'));
 });
 
+test('a cross-origin punish iframe pauses the search instead of navigating', async () => {
+  // Regression for the sufei punish wall: it arrives as a cross-origin iframe
+  // (h5api.m.taobao.com `_____tmd_____/punish`), here nested inside a holder
+  // frame the in-page detector never scans. The Playwright-level frame scan
+  // must catch it and wait — never navigate while the wall is up.
+  engine.options.timeoutMs = 500; engine.options.manualTimeoutMs = 8000;
+  const searchVisits = [];
+  await context.route('**/*', route => {
+    const url = new URL(route.request().url());
+    if (url.hostname === 'h5api.m.taobao.com') return route.fulfill({ contentType: 'text/html; charset=utf-8', body: '<div id="baxia-punish"><p>亲，请拖动下方滑块完成验证</p></div>' });
+    if (url.hostname === 'holder.taobao.com') {
+      // The user solves the slider after ~2.4 s: the punish iframe goes away.
+      return route.fulfill({ contentType: 'text/html; charset=utf-8', body: '<iframe src="https://h5api.m.taobao.com/_____tmd_____/punish?action=captcha"></iframe><script>setTimeout(()=>document.querySelector("iframe").remove(),2400)</script>' });
+    }
+    searchVisits.push(url.href);
+    const walled = searchVisits.length === 1;
+    const script = walled
+      ? `<iframe src="https://holder.taobao.com/holder.html"></iframe><script>setTimeout(()=>document.body.insertAdjacentHTML('beforeend', ${JSON.stringify(card())}), 2200)</script>`
+      : card();
+    return route.fulfill({ contentType: 'text/html; charset=utf-8', body: script });
+  });
+  const result = await engine.execute('search', { keyword: 'punish', options: { limit: 1 } });
+  assert.equal(result.ok, true, JSON.stringify(result.error));
+  assert.ok(result.meta.manualWaitMs >= 500, `expected a manual wait for the punish iframe, got ${result.meta.manualWaitMs}ms`);
+  assert.equal(searchVisits.length, 1);
+  assert.ok(events.some(event => event.state === 'needs_verification'));
+});
+
 test('specs then several variant quotes use one product navigation and wait for delayed prices', async () => {
   let navigations = 0;
   await context.route('**/*', route => { navigations++; return route.fulfill({ contentType: 'text/html; charset=utf-8', body: product() }); });

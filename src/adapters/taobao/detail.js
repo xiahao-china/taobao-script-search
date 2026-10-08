@@ -73,7 +73,10 @@ export class DetailAdapter {
         // navigation inside the sensitive window re-triggers it. Reuse the
         // current page when it already shows the target item.
         const resumed = await snapshot(page, 'detail', { itemId, singleVariant: state.catalog.skuBase?.props?.length === 0 && state.catalog.skuBase?.skus?.length === 1 }).catch(() => null);
-        if (resumed?.status !== 'ok' && !isItemPage(page.url(), itemId)) {
+        // A wall that re-appeared goes back into the wait loop; navigating
+        // during the sensitive window is what re-triggers it.
+        const walled = ['needs_login', 'needs_verification'].includes(resumed?.status);
+        if (!walled && resumed?.status !== 'ok' && !isItemPage(page.url(), itemId)) {
           this.navigations += 1;
           await navigate(page, target, this.options.timeoutMs);
           state.catalog = {}; state.observedAt = null;

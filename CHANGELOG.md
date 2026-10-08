@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The sufei punish wall now arrives as a cross-origin iframe
+  (`h5api.m.taobao.com/_____tmd_____/punish`) that the in-page detector cannot
+  always see (e.g. when it is nested inside a holder frame). A Playwright-level
+  frame scan catches it between polling chunks: the adapters wait for the
+  manual slider instead of navigating into the wall, the manual wait itself
+  tracks the frame until it is gone, and the post-wait resume no longer
+  navigates while a wall is still up. The in-page detector also learned the
+  inline `#baxia-punish`/`punish-component` markup, the 验证码拦截 title, and
+  the 请按住滑块 copy.
 - The Windows launcher no longer writes into `ProcessStartInfo.Environment[Variables]`,
   which Windows PowerShell 5.1 can expose as `$null`: indexing it aborted the
   bootstrap with "Cannot index into a null array", and a partially written

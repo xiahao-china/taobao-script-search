@@ -88,10 +88,26 @@ try {
   $info.RedirectStandardError = $true
   $info.StandardOutputEncoding = New-Object Text.UTF8Encoding($false)
   $info.StandardErrorEncoding = New-Object Text.UTF8Encoding($false)
-  foreach ($key in $settings.Keys) { $info.EnvironmentVariables[$key] = $settings[$key] }
   $process = New-Object Diagnostics.Process
   $process.StartInfo = $info
-  if (-not $process.Start()) { throw 'Embedded Node process did not start' }
+  # Windows PowerShell 5.1 can expose ProcessStartInfo.Environment[Variables] as
+  # $null. Touching either one then throws "Cannot index into a null array", and
+  # assigning an empty dictionary makes the child inherit a gutted environment, so
+  # node.exe aborts at startup ("Assertion failed: ncrypto::CSPRNG"). Publish our
+  # settings through the parent process environment instead: an untouched
+  # ProcessStartInfo inherits it intact, and every key survives.
+  $previous = @{}
+  foreach ($key in $settings.Keys) {
+    $previous[$key] = [Environment]::GetEnvironmentVariable($key, 'Process')
+    [Environment]::SetEnvironmentVariable($key, [string]$settings[$key], 'Process')
+  }
+  try {
+    if (-not $process.Start()) { throw 'Embedded Node process did not start' }
+  } finally {
+    foreach ($key in $settings.Keys) {
+      [Environment]::SetEnvironmentVariable($key, $previous[$key], 'Process')
+    }
+  }
   # Drain both pipes concurrently; a login wait must not hide progress or
   # deadlock when stderr fills while stdout has no final JSON yet.
   $out = $process.StandardOutput.ReadLineAsync()

@@ -37,7 +37,7 @@ search 返回商品 itemId；specs 返回属性组、可取得的真实 SKU 与 
 
 CLI stdout 只返回最终业务 JSON；stderr 为进度和人工处理提示。`$LASTEXITCODE` 为 0 成功、1 失败。--output 保存 UTF-8 JSON。不要把 stderr 拼入 JSON。独立进程执行时在上述调用后 `exit $LASTEXITCODE`，将结果传给执行工具。
 
-第一次查询自动启动独立常驻服务，后续命令只提交任务。不要为每个查询重复 start/stop。服务启动参数只在首次启动生效；改变配置时先 stop 再 start。
+第一次查询自动启动独立常驻服务，后续命令只提交任务。不要为每个查询重复 start/stop。服务启动参数只在首次启动生效；改变配置时先 stop 再 start。在被管控的自动化会话（如受限工具沙箱）里运行时，会话结束可能回收常驻服务，下一次调用会自动重启服务并复用已解压的缓存；若要跨会话常驻，由用户在自己的终端手动执行 `Invoke-Taobao start`，后续调用会直接复用该服务。
 
 ## 浏览器和人工等待
 
@@ -51,7 +51,7 @@ Invoke-Taobao start --portable-browser --approval-timeout 600
 
 精简版不含内核且四类来源都未命中时，命令会以 `BROWSER_NOT_FOUND` 失败，`error.details.downloadUrls` 给出官方下载地址。此时不要自行猜测地址，按返回的地址让用户下载 `chrome-win64.zip`，再执行 `Invoke-Taobao browser install '<zip绝对路径>'`；装好后同机所有版本都复用它。`Invoke-Taobao browser info` 可查看当前解析到哪个内核。
 
-便携浏览器使用独立的长期资料目录 `%LOCALAPPDATA%/TaobaoSearch/browser-profile`；不复制日常 Chrome 的 Cookie。首次需要登录，此后复用该资料。搜索、详情和规格选择遇到登录/验证默认等待人工完成并继续原任务，等待不计入数据超时。
+便携浏览器使用独立的长期资料目录 `%LOCALAPPDATA%/TaobaoSearch/browser-profile`；不复制日常 Chrome 的 Cookie。首次需要登录，此后复用该资料。搜索、详情和规格选择遇到登录/验证默认等待人工完成并继续原任务，等待不计入数据超时。滑块验证弹窗（"请推动/拖动滑块完成验证"）会被自动识别：任务暂停、stderr 提示人工处理，不会反复导航触发更严风控；验证通过后若页面自动恢复结果，任务原地继续读取，不再重新发起导航。
 
 如果执行工具返回仍在运行的 session_id，继续等待原执行会话，不要重复提交。job <jobId> 可获取原任务状态/结果；status 检查服务。stop 断开服务连接，不关闭日常或便携浏览器。浏览器未登录时不能声称已核验商品。
 
@@ -59,7 +59,9 @@ Invoke-Taobao start --portable-browser --approval-timeout 600
 
 ## 批量输入
 
-多个关键词、多个商品或同商品多个规格，使用一次 batch。同商品打开一次、连续选择规格；批量刷新也只刷新一次同商品快照。
+同商品多个规格，用一次 batch：同商品打开一次、连续选择规格；批量刷新也只刷新一次同商品快照。
+
+**关键词搜索必须一个一个来**：`searches` 一次最多 3 个，超过会直接以 `INVALID_ARGUMENT` 失败。连续关键词复用同一个搜索标签，提交一长串会让页面在多个结果间反复跳转，并很快触发淘宝风控（滑条/访问太频繁）。需要多个关键词时拆成多次调用，每次间隔 ≥25 秒，看到验证页面立即停下等待人工处理。
 
 ```json
 {
@@ -74,7 +76,7 @@ Invoke-Taobao start --portable-browser --approval-timeout 600
 }
 ```
 
-每个 product 返回一项规格结果，再返回其各规格的详情。已有 specId 时使用 `{ "specId": "返回的标识" }`。也支持 tasks（operation 为 search/getSpecs/getDetail，params 为对应参数），最多 200 项，结果保持输入顺序。
+每个 product 返回一项规格结果，再返回其各规格的详情。已有 specId 时使用 `{ "specId": "返回的标识" }`。也支持 tasks（operation 为 search/getSpecs/getDetail，params 为对应参数），最多 200 项，结果保持输入顺序；tasks 里的 search 项不额外限制数量，但同样应遵守上面的间隔与数量纪律。
 
 ## 接口与结果
 

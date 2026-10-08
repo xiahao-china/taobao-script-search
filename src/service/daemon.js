@@ -1,5 +1,7 @@
 import { createServer } from 'node:net';
 import { mkdir, writeFile, readFile, unlink } from 'node:fs/promises';
+import { appendFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { config, runtimePaths } from '../core/config.js';
@@ -98,8 +100,15 @@ if (typeof __TAOBAO_PACKAGED__ === 'undefined' && process.argv[1] && fileURLToPa
     const argument = process.argv.find(value => value.startsWith('--config='));
     const input = argument ? JSON.parse(Buffer.from(argument.slice(9), 'base64').toString('utf8')) : {};
     const daemon = await createDaemon(input);
-    process.on('SIGINT', () => void daemon.close());
-    process.on('SIGTERM', () => void daemon.close());
+    const trace = message => { try { appendFileSync(join(daemon.paths.directory, 'daemon-exit.log'), `[${new Date().toISOString()}] ${message}\n`); } catch { /* Diagnostics must never break the daemon. */ } };
+    trace(`started pid=${process.pid} config=${JSON.stringify(input).slice(0, 120)}`);
+    process.on('exit', code => trace(`exit code=${code}`));
+    process.on('beforeExit', code => trace(`beforeExit code=${code}`));
+    process.on('uncaughtException', error => trace(`uncaughtException: ${error.stack?.split('\n')[0]}`));
+    process.on('unhandledRejection', error => trace(`unhandledRejection: ${String(error).split('\n')[0]}`));
+    process.on('SIGINT', () => { trace('SIGINT'); void daemon.close(); });
+    process.on('SIGTERM', () => { trace('SIGTERM'); void daemon.close(); });
+    process.on('SIGHUP', () => { trace('SIGHUP'); void daemon.close(); });
   } catch (error) {
     console.error(String(error.message).split('Call log:')[0]);
     process.exitCode = 1;

@@ -75,6 +75,33 @@ test('no-wait and separate manual timeout give explicit authentication errors', 
   assert.equal(result.error.code, 'AUTH_REQUIRED');
 });
 
+test('a baxia slider dialog pauses navigation instead of fighting the wall', async () => {
+  // Regression for "every verification popup made the tab jump around": the
+  // wall copy says 推动 (not 拖动) and baxia dialogs change neither the URL nor
+  // the title, so the text heuristics missed it and the search kept navigating.
+  engine.options.timeoutMs = 400; engine.options.manualTimeoutMs = 8000;
+  const searchVisits = [];
+  await context.route('**/*', route => {
+    const url = new URL(route.request().url());
+    if (url.hostname !== 's.taobao.com') return route.fulfill({ contentType: 'text/html; charset=utf-8', body: card() });
+    searchVisits.push(url.href);
+    // First hit serves the wall; it clears itself after 600 ms and the very
+    // same document then holds results — no redirect, exactly like baxia.
+    const wall = searchVisits.length === 1;
+    const script = wall
+      ? `<div id="baxia-dialog-content" class="dialog"><p>亲，请推动下方滑块完成验证</p></div><script>setTimeout(()=>{document.getElementById('baxia-dialog-content').remove();document.body.insertAdjacentHTML('beforeend', ${JSON.stringify(card())});}, 600)</script>`
+      : card();
+    return route.fulfill({ contentType: 'text/html; charset=utf-8', body: script });
+  });
+  const result = await engine.execute('search', { keyword: '滑块', options: { limit: 1 } });
+  assert.equal(result.ok, true, JSON.stringify(result.error));
+  assert.ok(result.meta.manualWaitMs >= 500, `expected a manual wait for the slider, got ${result.meta.manualWaitMs}ms`);
+  // The wall cleared in-place, so there must be exactly one search navigation —
+  // a second goto during the sensitive window is the bug.
+  assert.equal(searchVisits.length, 1);
+  assert.ok(events.some(event => event.state === 'needs_verification'));
+});
+
 test('specs then several variant quotes use one product navigation and wait for delayed prices', async () => {
   let navigations = 0;
   await context.route('**/*', route => { navigations++; return route.fulfill({ contentType: 'text/html; charset=utf-8', body: product() }); });

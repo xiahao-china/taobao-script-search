@@ -7,11 +7,24 @@ import { DetailAdapter } from '../adapters/taobao/detail.js';
 
 const operations = new Set(['search', 'getSpecs', 'getDetail']);
 
+/**
+ * Consecutive keyword searches reuse one search tab, so a long list walks the
+ * page through every result in a burst. Taobao's rate limiter answers that with
+ * a slider/verification wall and, before that, the tab visibly jumps between
+ * result pages. Keep the per-call ceiling low and require an explicit spread of
+ * separate calls instead.
+ */
+export const MAX_BATCH_SEARCHES = 3;
+
 export function expandBatch(input) {
   let tasks = input.tasks;
   if (!tasks) {
+    const searches = input.searches || [];
+    if (searches.length > MAX_BATCH_SEARCHES) {
+      throw new TaobaoError('INVALID_ARGUMENT', `一次最多提交 ${MAX_BATCH_SEARCHES} 个关键词（收到 ${searches.length} 个）。连续搜索会触发淘宝风控并导致搜索页反复跳转，请拆成多次调用，每次间隔 ≥25 秒。`);
+    }
     tasks = [];
-    for (const value of input.searches || []) tasks.push({ operation: 'search', params: typeof value === 'string' ? { keyword: value } : value });
+    for (const value of searches) tasks.push({ operation: 'search', params: typeof value === 'string' ? { keyword: value } : value });
     for (const product of input.products || []) {
       tasks.push({ operation: 'getSpecs', params: { itemId: product.itemId, options: product.options || {} } });
       for (const spec of product.specs || []) tasks.push({ operation: 'getDetail', params: { itemId: product.itemId, spec, options: product.options || {} } });

@@ -1,4 +1,5 @@
 import { mkdir, readFile, open } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
 import { join } from 'node:path';
@@ -7,6 +8,29 @@ import { TaobaoError } from '../core/errors.js';
 import { rpc } from './protocol.js';
 
 async function manifest(paths) { try { return JSON.parse(await readFile(paths.manifest, 'utf8')); } catch { return null; } }
+
+const PACKAGED = typeof __TAOBAO_PACKAGED__ !== 'undefined' && __TAOBAO_PACKAGED__;
+
+/**
+ * Where to find the daemon entry point.
+ *
+ * A packaged release ships `daemon.cjs` next to `cli.cjs`, but a source checkout
+ * keeps it at `src/service/daemon.js`. Resolve by what is actually on disk
+ * instead of assuming the development layout: a packaged CLI taking the source
+ * path dies with "Cannot find module ...src/service/daemon.js", and because the
+ * daemon never starts, every later command restarts the browser.
+ */
+export function pickDaemonEntry({ root, packaged, onDisk }) {
+  const candidates = packaged
+    ? [join(root, 'daemon.cjs'), join(root, 'src/service/daemon.js')]
+    : [join(root, 'src/service/daemon.js'), join(root, 'daemon.cjs')];
+  return candidates.find(onDisk) ?? candidates[0];
+}
+
+export function resolveDaemonEntry() {
+  return process.env.TAOBAO_SEARCH_DAEMON_ENTRY
+    || pickDaemonEntry({ root: projectRoot, packaged: PACKAGED, onDisk: existsSync });
+}
 
 export async function daemonStatus(paths) {
   const value = await manifest(paths);
@@ -20,7 +44,7 @@ export async function startDaemon(input = {}) {
   if (existing) return existing;
   await mkdir(paths.directory, { recursive: true, mode: 0o700 });
   const log = await open(paths.log, 'a', 0o600);
-  const entry = process.env.TAOBAO_SEARCH_DAEMON_ENTRY || join(projectRoot, 'src/service/daemon.js');
+  const entry = resolveDaemonEntry();
   const encodedConfig = `--config=${Buffer.from(JSON.stringify(options)).toString('base64')}`;
   let child;
   if (process.platform === 'win32' && process.env.TAOBAO_SEARCH_DAEMON_ENTRY) {

@@ -64,6 +64,13 @@ export async function navigate(page, url, timeoutMs) {
     try { await page.goto(url, { waitUntil: 'domcontentloaded', timeout: timeoutMs }); return; }
     catch (error) {
       if (!/interrupted by another navigation/.test(error.message) || attempt === 2) throw error;
+      // "Interrupted" usually means Taobao redirected us to a verification or
+      // login page. Retrying goto fights the rate limiter and is what makes the
+      // tab visibly jump around; land the redirect instead and hand a manual
+      // page back to the caller, whose wait loop knows how to pause on it.
+      await page.waitForTimeout(400).catch(() => {});
+      const hijacked = await page.evaluate(() => window.__taobaoScriptSearch ? window.__taobaoScriptSearch.auth() : null).catch(() => null);
+      if (hijacked) return;
     }
   }
 }

@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- The Windows launcher no longer writes into `ProcessStartInfo.Environment[Variables]`,
+  which Windows PowerShell 5.1 can expose as `$null`: indexing it aborted the
+  bootstrap with "Cannot index into a null array", and a partially written
+  dictionary could spawn `node.exe` with a gutted environment that died in
+  CSPRNG. Settings are published on the parent process environment instead.
+- A packaged CLI resolves the daemon entry by what exists on disk (`daemon.cjs`
+  next to the bundle) instead of assuming the development layout, which failed
+  with `SERVICE_START_FAILED` on every command.
+- Verification sliders are detected even when the baxia dialog changes neither
+  the URL nor the title and its copy says 推动 rather than 拖动. Clearing the
+  wall no longer fires a fresh navigation during the sensitive window: the
+  adapter reads the restored page in place and only leaves for the target URL
+  when the resume did not land there, and the manual wait no longer consumes
+  the data timeout budget.
+
+### Added
+
+- Regression tests for the packaged daemon resolution, the keyword ceiling of a
+  batch search (`MAX_BATCH_SEARCHES = 3`), and the launcher environment handling.
+
 ### Added
 
 - `lite` release variant: `dist/taobao-search-win11-x64-lite/` ships Node,

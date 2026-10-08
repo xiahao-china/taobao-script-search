@@ -69,9 +69,17 @@ export class DetailAdapter {
       catch (error) { if (error.name === 'TimeoutError') continue; throw error; }
       if (['needs_login', 'needs_verification'].includes(dom.status)) {
         manualWaitMs += await waitForManual(page, this.options, this.onEvent, signal);
-        this.navigations += 1;
-        await navigate(page, target, this.options.timeoutMs);
-        state.catalog = {}; state.observedAt = null; state.openedAt = Date.now();
+        // Clearing the wall often restores the product page by itself; a fresh
+        // navigation inside the sensitive window re-triggers it. Reuse the
+        // current page when it already shows the target item.
+        const resumed = await snapshot(page, 'detail', { itemId, singleVariant: state.catalog.skuBase?.props?.length === 0 && state.catalog.skuBase?.skus?.length === 1 }).catch(() => null);
+        if (resumed?.status !== 'ok' && !isItemPage(page.url(), itemId)) {
+          this.navigations += 1;
+          await navigate(page, target, this.options.timeoutMs);
+          state.catalog = {}; state.observedAt = null;
+        }
+        state.openedAt = Date.now();
+        // Manual waiting does not consume the data budget.
         deadline = performance.now() + this.options.timeoutMs;
         continue;
       }

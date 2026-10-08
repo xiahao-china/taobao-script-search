@@ -81,6 +81,8 @@ await client.batch(batchInput);
 
 每个 product 先产生一项规格结果，然后产生每个 spec 的详情结果；输出按这份输入的顺序排列。也可提供 `tasks: [{ operation, params }]`，操作名为 search/getSpecs/getDetail，最多 200 项。
 
+`searches` 一次最多 3 项；超出返回 `INVALID_ARGUMENT`。关键词搜索复用同一个搜索标签，连续提交会让页面在多个结果间反复跳转并触发风控，需要多个关键词时拆成多次调用、间隔 ≥25 秒。
+
 批量输出的 `data` 包含各项完整 `results` 和 total/succeeded/failed。整体有失败时返回 `BATCH_PARTIAL_FAILURE`，保留已成功的结果。
 
 ## 常见错误

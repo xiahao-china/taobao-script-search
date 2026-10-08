@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { TaobaoError, checkAbort } from '../../core/errors.js';
 import { parsePrice } from '../../core/money.js';
-import { install, navigate, waitForData, waitForManual } from './page.js';
+import { install, navigate, snapshot, waitForData, waitForManual } from './page.js';
 
 const sorts = { default: '', 'price-asc': 'price-asc', 'price-desc': 'price-desc', sales: 'sale-desc' };
 
@@ -33,7 +33,15 @@ export class SearchAdapter {
       catch (error) { if (error.name === 'TimeoutError') continue; throw error; }
       if (['needs_login', 'needs_verification'].includes(value.status)) {
         manualWaitMs += await waitForManual(page, this.options, this.onEvent, signal);
-        await navigate(page, target, this.options.timeoutMs);
+        // Taobao usually restores the result page by itself once the wall is
+        // cleared. Navigating again right away fires a request during the
+        // post-verification sensitive window, re-triggers the wall, and is the
+        // visible "page jumping" loop. Read the current page first; only leave
+        // for the target URL when the resume did not land there.
+        const resumed = await snapshot(page, 'search', args).catch(() => null);
+        if (resumed?.status !== 'ok') await navigate(page, target, this.options.timeoutMs);
+        // The manual wait must not eat into the data budget: a slow human slide
+        // would otherwise leave no time to read the restored page.
         deadline = performance.now() + this.options.timeoutMs;
         continue;
       }

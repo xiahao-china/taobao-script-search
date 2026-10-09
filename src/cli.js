@@ -5,6 +5,7 @@ import { createTaobaoClient, startDaemon } from './index.js';
 import { failure, TaobaoError } from './core/errors.js';
 import { browserStatus } from './browser/chromium.js';
 import { installChromium } from './browser/install.js';
+import { installAutostart, removeAutostart } from './service/autostart.js';
 
 const help = `淘宝查询：JavaScript / Playwright 常驻服务，无 Browser Use
   taobao start [--cdp-url 本机地址] [--approval-timeout 120]
@@ -18,6 +19,7 @@ const help = `淘宝查询：JavaScript / Playwright 常驻服务，无 Browser 
   taobao job <任务ID>
   taobao browser info
   taobao browser install <chrome-win64.zip | 已解压目录>
+  taobao autostart [--remove]  注册/移除开机自启守护服务（登录后隐藏常驻，并立即拉起）
   taobao stop
 查询可加 --refresh；首次查询自动启动服务。
 浏览器优先复用本机日常 Chrome；精简版不含内核，缺内核时用 browser install 安装，或改用完整版发布包。
@@ -34,7 +36,7 @@ export async function main() {
       'cdp-url': { type: 'string' }, 'cdp-user-data-dir': { type: 'string' }, 'runtime-dir': { type: 'string' },
       timeout: { type: 'string' }, 'approval-timeout': { type: 'string' }, 'manual-timeout': { type: 'string' },
       'no-wait': { type: 'boolean' }, 'max-product-tabs': { type: 'string' },
-      'portable-browser': { type: 'boolean' },
+      'portable-browser': { type: 'boolean' }, remove: { type: 'boolean' },
     } });
     if (values.help || !positionals.length) { console.log(help); return; }
     operation = positionals[0];
@@ -88,6 +90,13 @@ export async function main() {
         if (!positionals[2]) throw new TaobaoError('INVALID_ARGUMENT', 'browser install 需要 chrome-win64.zip 或已解压目录的路径。');
         result = { ok: true, operation: 'browser', data: await installChromium(positionals[2]), error: null };
       } else throw new TaobaoError('INVALID_ARGUMENT', `未知 browser 子命令：${action}。可用：info、install。`);
+    } else if (operation === 'autostart') {
+      // Registering the Startup entry is instantaneous; starting the daemon
+      // through the regular path makes the same command usable as an
+      // immediate fix inside the user's own terminal.
+      const registered = values.remove ? await removeAutostart() : await installAutostart(daemonOptions);
+      const service = values.remove ? null : await startDaemon(daemonOptions);
+      result = { ok: true, operation: 'autostart', data: { ...registered, removed: Boolean(values.remove), service }, error: null };
     } else throw new TaobaoError('INVALID_ARGUMENT', `未知命令：${operation}`);
     process.removeListener('SIGINT', cancel);
     const rendered = JSON.stringify(result, null, 2) + '\n';

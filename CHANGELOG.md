@@ -35,6 +35,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `taobao autostart`: registers the resident daemon as a hidden Windows login
+  startup entry (Startup-folder VBS, runtime dir baked into the daemon config)
+  and starts the service immediately. A daemon spawned inside a managed tool
+  session dies with that session's process tree — the failure signature is a
+  remote-debugging consent click landing on an already-dead client. A
+  login-time daemon lives outside every session, so every skill call reuses
+  one long-lived connection: at most one consent click per Chrome run.
 - Regression tests for the packaged daemon resolution, the keyword ceiling of a
   batch search (`MAX_BATCH_SEARCHES = 3`), and the launcher environment handling.
 

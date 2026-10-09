@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `pidAlive` on Windows now confirms a signal-0 "alive" verdict against the
+  process table. `OpenProcess` succeeds for a terminated process while any
+  handle lingers, so a sandbox-reaped daemon could pass the liveness check as
+  a ghost pid — wedging `start` behind "先执行 taobao stop" until the stale
+  manifest was removed by hand. If the process table itself cannot be queried,
+  the signal-0 verdict is kept.
 - Single-instance guard for the resident daemon. Windows named pipes accept
   duplicate same-name listeners, so two daemons could silently own one runtime
   directory. A live manifest pid now refuses a second daemon at startup and

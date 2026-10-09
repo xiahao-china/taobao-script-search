@@ -5,6 +5,7 @@ import { mkdir, writeFile, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { startDaemon, TaobaoClient } from '../src/service/client.js';
+import { pidAlive } from '../src/service/pid.js';
 
 const sleepers = [];
 afterEach(() => { for (const child of sleepers.splice(0)) child.kill(); });
@@ -41,4 +42,20 @@ test('stop force-kills a hung daemon pid and clears the manifest', { skip: proce
   const manifestGone = await readFile(join(dir, 'daemon.json'), 'utf8').then(() => false, error => error.code === 'ENOENT');
   assert.equal(manifestGone, true);
   await rm(dir, { recursive: true, force: true });
+});
+
+test('pidAlive reports false for a terminated pid whose handles may linger', { skip: process.platform !== 'win32' }, async () => {
+  const child = spawn(process.execPath, ['-e', 'process.exit(0)'], { stdio: 'ignore' });
+  const pid = child.pid;
+  await new Promise(resolve => child.on('exit', resolve));
+  child.unref();
+  // The pid could in theory be reused within this window; poll briefly and
+  // require a definitive dead verdict, which the signal-0-only check (pre-fix)
+  // could not give for a lingering-handle ghost.
+  const deadline = Date.now() + 10000;
+  while (Date.now() < deadline) {
+    if (!pidAlive(pid)) return;
+    await new Promise(resolve => setTimeout(resolve, 200));
+  }
+  assert.fail(`pid ${pid} still reported alive 10s after exit`);
 });

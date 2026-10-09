@@ -8,6 +8,7 @@ import { config, runtimePaths } from '../core/config.js';
 import { TaobaoEngine } from '../core/engine.js';
 import { failure, TaobaoError } from '../core/errors.js';
 import { consumeLines, send, protocolVersion } from './protocol.js';
+import { pidAlive } from './pid.js';
 
 export async function createDaemon(input = {}, dependencies = {}) {
   const options = config(input), paths = runtimePaths(options.runtimeDir || undefined);
@@ -71,6 +72,19 @@ export async function createDaemon(input = {}, dependencies = {}) {
       }).catch(error => { job.result = failure(job.operation, error); job.state = 'failed'; currentJob = null; });
     }, error => { send(socket, { kind: 'error', error: { code: 'INVALID_ARGUMENT', message: String(error.message) } }); socket.end(); });
   });
+
+  // Single instance per runtime directory. Windows named pipes happily accept
+  // duplicate same-name listeners, which silently splits traffic between two
+  // daemons, so a live manifest pid refuses a second instance outright.
+  try {
+    const existing = JSON.parse(await readFile(paths.manifest, 'utf8'));
+    if (existing.pid && existing.pid !== process.pid && pidAlive(existing.pid)) {
+      throw new TaobaoError('SERVICE_ALREADY_RUNNING', `另一个守护进程已持有该运行目录（pid=${existing.pid}），本实例拒绝启动。`);
+    }
+  } catch (error) {
+    if (error instanceof TaobaoError) throw error;
+    // No manifest or unreadable: first run or stale file — proceed.
+  }
 
   await mkdir(paths.directory, { recursive: true, mode: 0o700 });
   // A stale Unix socket belongs to this exact project runtime only.

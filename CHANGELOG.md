@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Single-instance guard for the resident daemon. Windows named pipes accept
+  duplicate same-name listeners, so two daemons could silently own one runtime
+  directory. A live manifest pid now refuses a second daemon at startup and
+  the CLI refuses a second spawn outright. `taobao stop` also cleans up a
+  daemon whose pipe is gone but whose node process lingers — the pid is
+  verified to really be our node image before it is killed — instead of
+  leaving a zombie that would block every later start.
 - The sufei punish wall now arrives as a cross-origin iframe
   (`h5api.m.taobao.com/_____tmd_____/punish`) that the in-page detector cannot
   always see (e.g. when it is nested inside a holder frame). A Playwright-level

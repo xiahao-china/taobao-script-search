@@ -42,6 +42,6 @@
     "playwright": "1.63.0"
   },
   "devDependencies": {
-    "webpack": "5.111.1"
+    "webpack": "5.112.0"
   }
 }

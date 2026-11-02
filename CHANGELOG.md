@@ -5,6 +5,48 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-11-03
+
+### Added
+
+- Pure HTTP MTOP client (`src/core/mtop-client.js`): MD5 signing, automatic
+  `_m_h5_tk` renewal, cross-process rate limiting (1.5–3.0 s jitter) — the
+  Playwright daemon, DOM adapters and packaging chain are gone.
+- `sync-cookie` accepts pasted cookies (`--cookie-string` / `--stdin`).
+- Root `cookie.json` user configuration (template: `cookie.example.json`),
+  read-only to the program; token renewal and sync-cookie writes go to the
+  `.runtime/` cache only, and renewed tokens overlay the config's stale ones.
+
+### Changed
+
+- `batch` reuses one catalog fetch per product (N specs = 1 detail request,
+  not N) and now reports `total` / `succeeded` / `failed` alongside `results`.
+- `AbortSignal` is honored end-to-end: Ctrl+C interrupts queue waiting and
+  in-flight requests (`CANCELLED`).
+- CLI: `detail --default` shortcut for single-SKU products; help text matches
+  the actual batch input format.
+
+### Fixed
+
+- `getDetail` no longer silently falls back to the item default ("引流") price
+  when the requested SKU's price is missing — it raises
+  `SKU_PRICE_UNCONFIRMED` instead; the fallback is reserved for
+  `{ kind: 'default' }`.
+- Variant labels are validated by existence checks only; a real spec label
+  containing the word "undefined" is no longer dropped.
+- `failure()` reports `INTERNAL_ERROR` instead of the leftover
+  `BROWSER_ERROR`; Playwright `Call log:` trimming removed.
+- Spec-label lookups in `fetchCatalog` scan the payload once instead of three
+  deep-search passes; `parseBody` deduplicated into `src/core/json-body.js`;
+  dead v0.2 code removed (`buildSpecs`, `config()`, daemon paths in
+  `runtimePaths`).
+- `docs/api-contract.md` rewritten to match the v0.3 SDK and CLI.
+
+## [0.2.0] - 2026-10 (daemon era, superseded)
+
+See git history for the Playwright daemon release notes: Windows pid liveness
+verdict, single-instance daemon guard, sufei punish wall detection.
+
 ## [Unreleased]
 
 ### Fixed

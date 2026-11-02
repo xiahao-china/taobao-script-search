@@ -10,41 +10,54 @@ export function cookieStorePath(runtimeDir) {
   return join(runtimePaths(runtimeDir || undefined).directory, 'mtop-cookies.json');
 }
 
-// 根目录 cookie.json：面向使用者的显式配置（模板见 cookie.example.json），
-// 优先于 .runtime/ 自动缓存。支持两种格式：
+// 根目录 cookie.json：面向使用者的显式配置（模板见 cookie.example.json），**只读**——
+// 程序从不覆写它，令牌续签与 sync-cookie 全部落到 .runtime 运行时缓存。
+// 支持两种格式：
 //   简单格式：{"cookie": "name=value; name2=value2"}
-//   内部格式：{"cookies": {"name": {"value": "...", "domain": "...", "expires": ...}}}（令牌自动续签后写回的形态）
-// 可用环境变量 TAOBAO_COOKIE_FILE 指定其他路径（测试与多账号场景用）。
+//   内部格式：{"cookies": {"name": {"value": "...", "domain": "...", "expires": ...}}}
+// 加载规则：主配置存在时以其为登录态基准，仅令牌键（_m_h5_tk/_m_h5_tk_enc）用
+// .runtime 里的续签值覆盖——那两个键是网关临时下发的，配置文件里的永远更旧。
+// 可用环境变量 TAOBAO_COOKIE_FILE 指定其他主配置路径（测试与多账号场景用，显式指定即独占）。
+const TOKEN_KEYS = ['_m_h5_tk', '_m_h5_tk_enc'];
+
 export function rootCookiePath() {
   return process.env.TAOBAO_COOKIE_FILE
     || join(resolve(dirname(fileURLToPath(import.meta.url)), '..', '..'), 'cookie.json');
 }
 
-async function existingStorePath(runtimeDir) {
-  if (process.env.TAOBAO_COOKIE_FILE) return process.env.TAOBAO_COOKIE_FILE; // 显式指定即独占，不回退
-  const root = rootCookiePath();
-  try {
-    await access(root);
-    return root;
-  } catch { /* 根目录未提供 cookie.json，回退到 .runtime 缓存 */ }
-  return cookieStorePath(runtimeDir);
+function storeFromRaw(raw) {
+  if (raw && typeof raw.cookie === 'string' && raw.cookie.trim()) {
+    const store = { syncedAt: null, sync: null, cookies: {} };
+    mergeCookieString(store, raw.cookie);
+    return store;
+  }
+  if (raw && typeof raw.cookies === 'object' && raw.cookies) return { syncedAt: raw.syncedAt ?? null, sync: raw.sync ?? null, cookies: raw.cookies };
+  return null;
+}
+
+async function readStoreFile(path) {
+  try { return storeFromRaw(JSON.parse(await readFile(path, 'utf8'))); } catch { /* 不存在或损坏都视为空。 */ }
+  return null;
+}
+
+async function pathExists(path) {
+  try { await access(path); return true; } catch { return false; }
 }
 
 export async function loadCookies(runtimeDir) {
-  try {
-    const raw = JSON.parse(await readFile(await existingStorePath(runtimeDir), 'utf8'));
-    if (raw && typeof raw.cookie === 'string' && raw.cookie.trim()) {
-      const store = { syncedAt: null, sync: null, cookies: {} };
-      mergeCookieString(store, raw.cookie);
-      return store;
-    }
-    if (raw && typeof raw.cookies === 'object' && raw.cookies) return { syncedAt: raw.syncedAt ?? null, sync: raw.sync ?? null, cookies: raw.cookies };
-  } catch { /* 首次使用或文件损坏时都从空罐开始。 */ }
-  return { syncedAt: null, sync: null, cookies: {} };
+  const primaryPath = process.env.TAOBAO_COOKIE_FILE
+    ?? ((await pathExists(rootCookiePath())) ? rootCookiePath() : null);
+  const primary = primaryPath ? await readStoreFile(primaryPath) : null;
+  const runtimeCache = (await readStoreFile(cookieStorePath(runtimeDir))) || { syncedAt: null, sync: null, cookies: {} };
+  if (!primary) return runtimeCache;
+  const store = { ...primary, cookies: { ...primary.cookies } };
+  for (const key of TOKEN_KEYS) if (runtimeCache.cookies[key]) store.cookies[key] = runtimeCache.cookies[key];
+  return store;
 }
 
+// 所有程序写入（令牌续签、sync-cookie 导入）一律进 .runtime 缓存，主配置永不被改写。
 export async function saveCookies(store, runtimeDir) {
-  const path = await existingStorePath(runtimeDir);
+  const path = cookieStorePath(runtimeDir);
   await mkdir(dirname(path), { recursive: true });
   await writeFile(path, JSON.stringify(store, null, 2) + '\n');
 }

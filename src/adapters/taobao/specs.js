@@ -1,23 +1,17 @@
 import { createHash } from 'node:crypto';
 import { TaobaoError } from '../../core/errors.js';
 import { parsePrice } from '../../core/money.js';
+import { parseBody } from '../../core/json-body.js';
 
 const hash = text => createHash('sha256').update(text).digest('hex').slice(0, 16);
 const clean = value => String(value || '').replace(/\s+/g, ' ').trim();
-
-export function parseJson(body) {
-  try { return JSON.parse(body); } catch { /* JSONP is parsed, never evaluated. */ }
-  const match = body.match(/^[\w$]+\s*\(([\s\S]*)\)\s*;?\s*$/);
-  if (match) try { return JSON.parse(match[1]); } catch { /* Invalid response. */ }
-  return null;
-}
 
 export function extractCatalog(payload) {
   const queue = [payload], seen = new Set();
   let skuBase = null, skuCore = null, itemId = null;
   for (let visited = 0; queue.length && visited < 1000; visited++) {
     let value = queue.shift();
-    if (typeof value === 'string' && value.trim().startsWith('{')) value = parseJson(value);
+    if (typeof value === 'string' && value.trim().startsWith('{')) value = parseBody(value);
     if (!value || typeof value !== 'object' || seen.has(value)) continue;
     seen.add(value);
     skuBase ||= value.skuBase;
@@ -26,39 +20,6 @@ export function extractCatalog(payload) {
     for (const child of Object.values(value).slice(0, 100)) if (typeof child === 'object' || typeof child === 'string') queue.push(child);
   }
   return { skuBase, skuCore, itemId };
-}
-
-export function buildSpecs(itemId, dom, catalog = {}) {
-  const props = catalog.skuBase?.props || [];
-  const groups = dom.groups.map(group => {
-    const prop = props.find(prop => String(prop.pid) === group.nativeId) || props.find(prop => clean(prop.name) === group.name);
-    const groupId = prop ? String(prop.pid) : group.nativeId || `g:${hash(`${group.index}:${group.name}`)}`;
-    return {
-      groupId, name: group.name, index: group.index,
-      values: group.values.map(value => {
-        const native = prop?.values?.find(native => String(native.vid) === value.nativeId || clean(native.name) === value.label);
-        return { valueId: native ? String(native.vid) : value.nativeId || `v:${hash(value.label)}`, label: value.label, available: !value.disabled, index: value.index };
-      }),
-    };
-  });
-  const nativeSkus = Array.isArray(catalog.skuBase?.skus) ? catalog.skuBase.skus : [];
-  const variants = nativeSkus.flatMap(sku => {
-    if (!sku.skuId || String(sku.skuId) === '0') return [];
-    const selections = (sku.propPath || '').split(';').filter(Boolean).map(pair => {
-      const [groupId, valueId] = pair.split(':');
-      return { groupId, valueId };
-    });
-    if (selections.length !== groups.length || selections.some(value => !groups.find(group => group.groupId === value.groupId)?.values.some(option => option.valueId === value.valueId))) return [];
-    return [{ specId: `sku:${sku.skuId}`, skuId: String(sku.skuId), selections, label: selections.map(value => groups.find(group => group.groupId === value.groupId).values.find(option => option.valueId === value.valueId).label).join(' / ') }];
-  });
-  if (!variants.length && groups.length === 1) {
-    const group = groups[0];
-    for (const value of group.values) variants.push({ specId: `dom:${hash(`${itemId}:${group.groupId}:${value.valueId}`)}`, skuId: null, label: value.label, selections: [{ groupId: group.groupId, valueId: value.valueId }] });
-  }
-  return {
-    itemId, groups, variants,
-    mode: groups.length ? (variants.length ? 'variants' : 'select-by-groups') : nativeSkus.length === 1 ? 'single-variant' : 'unknown',
-  };
 }
 
 export function publicSpecs(specs) {

@@ -24,10 +24,6 @@ function expand(data) {
   return nodes;
 }
 
-function deepFind(nodes, test) {
-  return nodes.find(test) || null;
-}
-
 const ITEM_KEYS = ['itemId', 'item_id', 'id'];
 const looksLikeItem = row => row && typeof row === 'object' &&
   ITEM_KEYS.some(key => /^\d{6,}$/.test(String(row[key] ?? '')));
@@ -80,7 +76,9 @@ export function buildMtopSpecs(itemId, catalog) {
       const group = groups.find(group => group.groupId === selection.groupId);
       return group?.values.find(value => value.valueId === selection.valueId)?.label;
     }).join(' / ');
-    if (label.includes('undefined') || selections.some(selection => !groups.find(group => group.groupId === selection.groupId)?.values.some(value => value.valueId === selection.valueId))) return [];
+    // 只用存在性校验判定 label 有效性；不做 'undefined' 字符串判断，
+    // 否则真实规格名恰好含该词时会被误杀。
+    if (selections.some(selection => !groups.find(group => group.groupId === selection.groupId)?.values.some(value => value.valueId === selection.valueId))) return [];
     return [{ specId: `sku:${sku.skuId}`, skuId: String(sku.skuId), selections, label }];
   });
   if (!variants.length && !groups.length && nativeSkus.length === 1 && nativeSkus[0].skuId && String(nativeSkus[0].skuId) !== '0') {
@@ -126,7 +124,7 @@ export class MtopAdapter {
     const data = await this.client.request('mtop.taobao.wsearch.appsearch', '1.0', {
       q: keyword, search_action: 'initiative', page: String(params.page),
       n: String(params.limit), sversion: '9.9.9', ...(SORTS[params.sort] ? { sort: SORTS[params.sort] } : {}),
-    });
+    }, { signal });
     const items = collectRows(data).map(mapItem).filter(Boolean).slice(0, params.limit);
     if (!items.length) throw new TaobaoError('NO_RESULTS', '搜索接口未返回商品数据；可能是关键词无结果或返回结构变化。');
     return {
@@ -141,7 +139,7 @@ export class MtopAdapter {
 
   // 详情接口双保险：H5 getdetail 优先，拿不到 skuBase/skuCore 时退回 PC 接口。
   // 商品标题/店铺名与规格数据可能分布在不同层级，同一次响应里一并深搜提取。
-  async fetchCatalog(itemId) {
+  async fetchCatalog(itemId, signal) {
     const attempts = [
       ['mtop.taobao.detail.getdetail', '6.0', { id: itemId, exParams: JSON.stringify({ id: itemId }) }],
       ['mtop.taobao.pcdetail.data.get', '1.0', {
@@ -151,15 +149,22 @@ export class MtopAdapter {
     ];
     let empty = false;
     for (const [api, version, data] of attempts) {
-      const payload = await this.client.request(api, version, data);
+      const payload = await this.client.request(api, version, data, { signal });
       const catalog = extractCatalog(payload);
       if (catalog.skuBase || catalog.skuCore) {
         // item 对象不一定带 itemId 字段；skuBase/props 值对象只有 name，不会误匹配。
+        // 店铺字段在不同响应层级名称不一，一趟扫描按优先级取出。
         const nodes = expand(payload);
-        const itemNode = deepFind(nodes, node => typeof node?.title === 'string' && stripTags(node.title).length > 1);
-        const sellerNode = deepFind(nodes, node => typeof node?.shopName === 'string' && node.shopName)
-          || deepFind(nodes, node => typeof node?.shopNameText === 'string' && node.shopNameText)
-          || deepFind(nodes, node => typeof node?.nick === 'string' && node.nick);
+        let itemNode = null, sellerNode = null;
+        for (const node of nodes) {
+          if (!itemNode && typeof node?.title === 'string' && stripTags(node.title).length > 1) itemNode = node;
+          if (!sellerNode) {
+            if (typeof node?.shopName === 'string' && node.shopName) sellerNode = node;
+            else if (typeof node?.shopNameText === 'string' && node.shopNameText) sellerNode = node;
+            else if (typeof node?.nick === 'string' && node.nick) sellerNode = node;
+          }
+          if (itemNode && sellerNode) break;
+        }
         return {
           ...catalog,
           item: {
@@ -177,18 +182,24 @@ export class MtopAdapter {
 
   async getSpecs(itemId, options = {}, signal) {
     requireId(itemId);
-    const catalog = await this.fetchCatalog(itemId);
+    const catalog = await this.fetchCatalog(itemId, signal);
     const specs = buildMtopSpecs(itemId, catalog);
     return { data: publicSpecs(specs), meta: { provider: 'mtop-http', observedAt: new Date().toISOString() } };
   }
 
-  async getDetail(itemId, spec, options = {}, signal) {
-    requireId(itemId);
-    const catalog = await this.fetchCatalog(itemId);
+  // 从已拉取的 catalog 解析单规格详情；batch 用它复用同商品的 catalog，避免重复请求。
+  detailFromCatalog(catalog, itemId, spec) {
     const specs = buildMtopSpecs(itemId, catalog);
     const selection = resolveSpec(specs, spec);
-    const price = skuPriceLoose(catalog, selection.skuId) || defaultPrice(catalog);
-    if (!price) throw new TaobaoError('SKU_PRICE_UNCONFIRMED', '接口未返回该规格的价格，无法核验；不返回猜测值。');
+    // 指定了具体 SKU 时只认 sku2info 里该 SKU 的价，缺失就明确报错；
+    // 仅 default 模式（无 skuId）才允许回退到商品默认价——杜绝把引流价冒充规格价。
+    const price = selection.skuId ? skuPriceLoose(catalog, selection.skuId) : defaultPrice(catalog);
+    if (!price) {
+      const code = selection.skuId ? 'SKU_PRICE_UNCONFIRMED' : 'DEFAULT_PRICE_UNCONFIRMED';
+      throw new TaobaoError(code, selection.skuId
+        ? '接口未返回该规格的价格，无法核验；不返回猜测值。'
+        : '接口未返回商品默认价格，无法核验。');
+    }
     const imageUrls = Array.isArray(catalog.item?.images) ? catalog.item.images.map(String) : [];
     return {
       data: {
@@ -197,7 +208,7 @@ export class MtopAdapter {
         title: catalog.item?.title ? stripTags(catalog.item.title) : null,
         url: `https://item.taobao.com/item.htm?id=${itemId}`,
         shopName: catalog.item?.shopName || null,
-        price: { amount: price.amount, currency: price.currency, basis: price.basis, display: price.display, scope: 'selected-spec', observedAt: new Date().toISOString() },
+        price: { amount: price.amount, currency: price.currency, basis: price.basis, display: price.display, scope: selection.skuId ? 'selected-spec' : 'item-default', observedAt: new Date().toISOString() },
         stock: price.stock ?? null, shipping: null,
         attributes: specs.groups.map(group => ({ name: group.name, values: group.values.map(value => value.label) })),
         description: null, imageUrls,
@@ -212,6 +223,12 @@ export class MtopAdapter {
     };
   }
 
+  async getDetail(itemId, spec, options = {}, signal) {
+    requireId(itemId);
+    const catalog = await this.fetchCatalog(itemId, signal);
+    return this.detailFromCatalog(catalog, itemId, spec);
+  }
+
   async batch(input, signal) {
     const results = [];
     for (const entry of input.searches || []) {
@@ -221,15 +238,28 @@ export class MtopAdapter {
     }
     for (const product of input.products || []) {
       const specs = Array.isArray(product.specs) && product.specs.length ? product.specs : [null];
+      // 同商品只拉一次 catalog，多规格在内存里复用——否则 N 个规格 = N 次详情请求。
+      let catalog = null;
+      try {
+        requireId(product.itemId);
+        catalog = await this.fetchCatalog(product.itemId, signal);
+      } catch (error) {
+        for (const spec of specs) results.push({ kind: spec ? 'detail' : 'specs', itemId: product.itemId, error: { code: error.code || 'MTOP_ERROR', message: error.message } });
+        continue;
+      }
       for (const spec of specs) {
         try {
-          const result = spec ? await this.getDetail(product.itemId, spec, {}, signal) : await this.getSpecs(product.itemId, {}, signal);
+          const result = spec ? this.detailFromCatalog(catalog, product.itemId, spec) : { data: publicSpecs(buildMtopSpecs(product.itemId, catalog)), meta: { provider: 'mtop-http', observedAt: new Date().toISOString() } };
           results.push({ kind: spec ? 'detail' : 'specs', itemId: product.itemId, result });
         } catch (error) {
           results.push({ kind: spec ? 'detail' : 'specs', itemId: product.itemId, error: { code: error.code || 'MTOP_ERROR', message: error.message } });
         }
       }
     }
-    return { data: { results }, meta: { provider: 'mtop-http', observedAt: new Date().toISOString() } };
+    const failed = results.filter(item => item.error).length;
+    return {
+      data: { results, total: results.length, succeeded: results.length - failed, failed },
+      meta: { provider: 'mtop-http', observedAt: new Date().toISOString() },
+    };
   }
 }

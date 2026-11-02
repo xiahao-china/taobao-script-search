@@ -15,8 +15,8 @@ export function failure(operation, error, meta = {}) {
   return {
     ok: false, operation, data: null,
     error: {
-      code: error.code || 'BROWSER_ERROR',
-      message: String(error.message || error).split('Call log:')[0].trim(),
+      code: error.code || 'INTERNAL_ERROR',
+      message: String(error.message || error).trim(),
       details: error.details || null,
     },
     meta,

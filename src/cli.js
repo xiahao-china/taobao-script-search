@@ -8,12 +8,16 @@ import { MtopAdapter } from './adapters/taobao/mtop.js';
 const help = `淘宝查询：纯 HTTP MTOP 直连（零浏览器依赖，即用即调）
   taobao search <关键词> [--limit 20] [--page 1] [--sort default]
   taobao specs <商品ID>
-  taobao detail <商品ID> --spec-id <规格ID> | --spec '{...}' | --labels '[...]'
-  taobao batch --file examples/batch.json [--output artifacts/result.json]
+  taobao detail <商品ID> --spec-id <规格ID> | --spec '{...}' | --labels '[...]' | --default
+  taobao batch --file <批量清单.json> [--output 结果.json]
+      清单格式：{"searches":[{"keyword":"...","options":{"limit":5}}],
+                "products":[{"itemId":"...","specs":[{"labels":["..."]}|null]}]}
+      specs 传 null 时该商品只返回规格树；输出含 total/succeeded/failed 统计。
   taobao sync-cookie --cookie-string "a=b; c=d"   导入 Cookie（或 --stdin 从管道读入）
 首次使用：复制仓库根目录 cookie.example.json 为 cookie.json，把 cookie 字段替换成
-浏览器里 taobao.com 的完整 Cookie 字符串（获取方法见 README「配置 Cookie」）；
-或执行一次 sync-cookie 导入。登录态失效时更新 cookie.json 即可。
+浏览器里 taobao.com 的完整 Cookie 字符串（获取方法见 README「配置 Cookie」）。
+cookie.json 只读不被程序改写；签名令牌自动续签，登录态失效时更新 cookie.json 即可
+（已存在 cookie.json 时 sync-cookie 仅刷新令牌缓存，登录态以 cookie.json 为准）。
 内置限速：相邻 MTOP 请求间隔 1.5–3.0 秒（跨进程生效），触发滑块会明确报 AUTH_REQUIRED。`;
 
 function envelope(operation, payload) {
@@ -63,9 +67,12 @@ async function mtopCommand(operation, positionals, values, control) {
   if (operation === 'search') return envelope('search', await adapter.search(positionals[1], queryOptions, control.signal));
   if (operation === 'specs') return envelope('specs', await adapter.getSpecs(positionals[1], queryOptions, control.signal));
   if (operation === 'detail') {
-    const selections = [values['spec-id'], values.spec, values.labels].filter(value => value !== undefined);
-    if (selections.length !== 1) throw new TaobaoError('INVALID_ARGUMENT', 'detail 须且只能提供 --spec-id、--spec 或 --labels 之一。');
-    const spec = values['spec-id'] ? { specId: values['spec-id'] } : values.spec ? JSON.parse(values.spec) : { labels: JSON.parse(values.labels) };
+    const selections = [values['spec-id'], values.spec, values.labels, values.default].filter(value => value !== undefined);
+    if (selections.length !== 1) throw new TaobaoError('INVALID_ARGUMENT', 'detail 须且只能提供 --spec-id、--spec、--labels、--default 之一。');
+    const spec = values['spec-id'] ? { specId: values['spec-id'] }
+      : values.spec ? JSON.parse(values.spec)
+      : values.labels ? { labels: JSON.parse(values.labels) }
+      : { kind: 'default' };
     return envelope('detail', await adapter.getDetail(positionals[1], spec, queryOptions, control.signal));
   }
   if (!values.file) throw new TaobaoError('INVALID_ARGUMENT', 'batch 必须指定 --file。');
@@ -78,7 +85,7 @@ export async function main() {
   try {
     const { values, positionals } = parseArgs({ allowPositionals: true, options: {
       help: { type: 'boolean', short: 'h' }, limit: { type: 'string' }, page: { type: 'string' }, sort: { type: 'string' },
-      'spec-id': { type: 'string' }, spec: { type: 'string' }, labels: { type: 'string' },
+      'spec-id': { type: 'string' }, spec: { type: 'string' }, labels: { type: 'string' }, default: { type: 'boolean' },
       file: { type: 'string' }, output: { type: 'string' },
       'cookie-string': { type: 'string' }, stdin: { type: 'boolean' },
       'runtime-dir': { type: 'string' }, timeout: { type: 'string' },

@@ -56,7 +56,7 @@ node bin/taobao.js batch --file 批量清单.json --output artifacts/quotes.json
 
 `cookie.json` 已被 `.gitignore` 排除，**不会**被提交或上传；它等同你的登录态，也不要手动外发。查询时若未检测到登录态字段（`unb`/`cookie2`/`sgcookie`），CLI 会直接报 `AUTH_REQUIRED` 并给出配置指引，不会发起注定被拦的请求。
 
-`cookie.json` 支持两种格式：简单格式 `{"cookie": "name=value; ..."}`（手动编辑推荐）与内部格式 `{"cookies": {...}}`（签名令牌自动续签后写回的形态，二者通用）。也可用 `taobao sync-cookie --cookie-string "..."` / `--stdin` 导入；已登录的令牌续签会自动写回同一文件。环境变量 `TAOBAO_COOKIE_FILE` 可指定其他路径。
+`cookie.json` 支持两种格式：简单格式 `{"cookie": "name=value; ..."}`（手动编辑推荐）与内部格式 `{"cookies": {...}}`，二者通用。**它是你的配置文件，程序只读不写**——签名令牌自动续签与 `sync-cookie` 导入一律落到 `.runtime/` 缓存（续签后的新令牌会自动覆盖配置里的旧令牌），更新登录态直接编辑 `cookie.json` 即可。环境变量 `TAOBAO_COOKIE_FILE` 可指定其他路径。
 
 ## 内置风控防护
 

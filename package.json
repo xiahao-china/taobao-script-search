@@ -1,15 +1,14 @@
 {
   "name": "taobao-script-search",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
-  "description": "Persistent Playwright JavaScript service for Taobao product queries",
+  "description": "Pure HTTP MTOP client for Taobao product queries (no browser, no daemon)",
   "keywords": [
     "taobao",
-    "playwright",
+    "mtop",
     "scraper",
     "search",
-    "cli",
-    "cdp"
+    "cli"
   ],
   "license": "MIT",
   "author": "xiahao-china",
@@ -22,7 +21,7 @@
   },
   "type": "module",
   "engines": {
-    "node": ">=24"
+    "node": ">=22"
   },
   "exports": "./src/index.js",
   "bin": {
@@ -30,18 +29,8 @@
   },
   "scripts": {
     "taobao": "node bin/taobao.js",
-    "test": "node --test --test-concurrency=1 tests/*.test.js",
-    "probe:mtop": "node scripts/probe-mtop.js",
-    "audit:publish": "node scripts/audit-publish.js",
-    "build:win11": "node scripts/build-release.js",
-    "build:win11:full": "node scripts/build-release.js --variant=full",
-    "build:win11:lite": "node scripts/build-release.js --variant=lite",
-    "test:release": "node --test --test-concurrency=1 tests/release.test.js"
+    "test": "node --test tools/mtop-local.test.js",
+    "probe:mtop": "node tools/probe-mtop.js"
   },
-  "dependencies": {
-    "playwright": "1.63.0"
-  },
-  "devDependencies": {
-    "webpack": "5.111.1"
-  }
+  "dependencies": {}
 }

@@ -1,7 +1,7 @@
+#!/usr/bin/env node
 /**
- * Anonymous, bounded MTOP connectivity probe. This is not the product SDK.
- * Uses only Node's HTTP fetch; does not open Chrome or read login credentials.
- * Cookie values, signatures, response bodies and redirect URLs are never saved.
+ * 匿名 MTOP 连通性探测（无 Cookie、有限请求，不保存任何响应）。
+ * 用法：node tools/probe-mtop.js [--keyword 关键词] [--item-id 商品ID] [--output 文件.json]
  */
 import { createHash } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
@@ -19,7 +19,7 @@ const { values } = parseArgs({
 });
 
 if (values.help) {
-  console.log('node scripts/probe-mtop.js [--keyword 关键词] [--item-id 商品ID] [--timeout-ms 8000] [--output 文件.json]');
+  console.log('node tools/probe-mtop.js [--keyword 关键词] [--item-id 商品ID] [--timeout-ms 8000] [--output 文件.json]');
   console.log('匿名 HTTP 探测；每个接口最多两次请求。不会读取 Chrome 或登录 Cookie。');
   process.exit(0);
 }

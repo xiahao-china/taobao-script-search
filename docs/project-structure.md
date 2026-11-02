@@ -1,65 +1,44 @@
 # 项目结构
 
-当前实现为 Node.js 单包项目，使用 ESM 和 `package.json` 管理入口与依赖。日期：2026-10-06。仓库根目录即项目根目录。
+纯 HTTP MTOP 直连实现，Node.js 单包项目（ESM，零运行时依赖）。日期：2026-11-03。仓库根目录即项目根目录。
 
 ```text
 taobao-script-search/
-├── package.json / package-lock.json    依赖、SDK、CLI、测试命令
+├── package.json / package-lock.json    脚本与元数据（无运行时依赖）
 ├── README.md / CHANGELOG.md            使用说明与版本记录
-├── CONTRIBUTING.md / CODE_OF_CONDUCT.md / SECURITY.md   协作与安全约定
 ├── LICENSE                             MIT
 ├── .gitignore / .gitattributes / .editorconfig / .gitleaks.toml
-├── .nvmrc / .github/                   固定 Node 24、CI、依赖更新、issue 模板
 ├── bin/taobao.js                       CLI 可执行入口
-├── src/
-│   ├── index.js                       公开 SDK
-│   ├── cli.js                         参数、提交、JSON 输出
+├── src/                                运行时代码
+│   ├── index.js                        公开 SDK（createMtopClient）
+│   ├── cli.js                          参数解析、sync-cookie、JSON 输出
 │   ├── core/
-│   │   ├── config.js                  项目/运行目录和服务配置
-│   │   ├── engine.js                  通用操作、缓存、批量分组
-│   │   ├── errors.js                  统一结果与错误
-│   │   └── money.js                   价格文本与口径
-│   ├── browser/
-│   │   ├── session.js                 日常 Chrome 连接与标签池
-│   │   ├── chromium.js                内核解析、官方镜像地址与缺失提示
-│   │   └── install.js                 解压用户自备内核到共享缓存
-│   ├── service/
-│   │   ├── daemon.js                  独立进程、任务队列和状态
-│   │   ├── client.js                  自动启动、SDK、后台进程
-│   │   └── protocol.js                命名管道 JSONL 协议
+│   │   ├── mtop-client.js              MTOP 请求客户端：MD5 签名、token 自动续签、
+│   │   │                               跨进程限速（1.5–3.0s 抖动）、风控报错
+│   │   ├── cookie-store.js             Cookie 罐：.runtime/mtop-cookies.json 读写、
+│   │   │                               Set-Cookie 合并、过期清理、Cookie 头构造
+│   │   ├── config.js                   项目/运行时目录解析
+│   │   ├── errors.js                   统一结果与错误（TaobaoError）
+│   │   └── money.js                    价格文本与口径
 │   └── adapters/taobao/
-│       ├── search.js                  搜索等待与结果适配
-│       ├── detail.js                  商品复用、选规格、核价
-│       ├── specs.js                   规格映射、真实 SKU、JSON 解析
-│       ├── page.js                    通用页面等待、人工恢复、导航
-│       └── dom/
-│           ├── auth.js                登录/验证识别
-│           ├── search.js              搜索页面选择器与提取
-│           └── detail.js              详情选择器及页面数据提取
-├── tests/                             离线适配与跨进程 Chrome 测试
-├── examples/                          SDK 与批量 JSON 示例
-├── scripts/
-│   ├── verify-live.js                 真实站点验收
-│   ├── build-release.js               两文件 Windows 11 x64 打包（full / lite）
-│   ├── audit-publish.js               暂存快照的凭据/隐私/路径审计
-│   └── probe-mtop.js                  直接 HTTP 研究探测
-├── docs/                              架构、契约、验证、调研
-├── packaging/                         webpack 双入口、PowerShell 启动器、JS 分发模板
-├── skills/taobao-search/               两文件发布的 SKILL.md 源文档
-├── dist/taobao-search-win11-x64/        taobao.js + SKILL.md（含内核），忽略提交
-├── dist/taobao-search-win11-x64-lite/   taobao.js + SKILL.md（不含内核），忽略提交
-├── legacy/
-│   ├── python/                        原 Python 原型、测试和采购记录
-│   ├── python-migration-draft/         未完成的旧包迁移草稿
-│   └── migration-manifest.json         38 个移动文件的 SHA-256
-├── artifacts/                         查询/研究结果，忽略提交
-├── .runtime/                          进程令牌和日志，忽略提交
-├── .cache/ / node_modules/             本地依赖缓存，忽略提交
-└── .venv/                             保留的原型环境，忽略提交
+│       ├── mtop.js                     search / specs / detail / batch 纯 HTTP 实现；
+│       │                               详情双保险 getdetail/6.0 → pcdetail.data.get/1.0
+│       └── specs.js                    规格解析通用件：extractCatalog、resolveSpec、
+│                                       skuPrice（纯函数）
+├── tools/                              开发阶段工具（测试 + 调试 + 探测）
+│   ├── mtop-local.test.js              本地逻辑回归：规格解析、Cookie 罐、单 SKU 边界
+│   ├── debug-catalog.mjs               接口返回结构 dump 到 .runtime/last-catalog.json
+│   └── probe-mtop.js                   匿名 MTOP 连通性探测（无 Cookie）
+├── docs/
+│   ├── api-contract.md                 输出契约（字段与错误码）
+│   ├── project-structure.md            本文件
+│   └── research/direct-api.md          2026-10 直接 HTTP 调研归档
+└── .runtime/                           本地运行时（gitignore）：
+    ├── mtop-cookies.json               Cookie 缓存（明文，等同登录态，勿外发）
+    ├── mtop-pacing.json                跨进程限速排队记录
+    └── last-catalog.json               debug-catalog 的最近 dump
 ```
 
-职责依赖：`CLI / SDK → service client → daemon → engine → adapters / browser`。页面选择器留在适配器中，通用服务和协议不包含采购型号或固定商品 ID。示例和真实验收才使用本次螺丝商品。
+批量清单格式与 SDK 用法见 README；无 examples 目录。
 
-原 Python 文件完整移入 `legacy/python/`；原 `outputs/` 保持在原型目录内，保留内部相对引用。移动后的 38 个文件已核对 SHA-256。旧 Python 包迁移未完成，作为草稿归档；现有运行入口均为 JS。
-
-当前仓库已初始化为 Git 单分支 `main`，远端为 GitHub 公开仓库。发布内容由 `.gitignore` 排除运行时、原型与构建产物，并由 `npm run audit:publish` 做提交前审计。目录命名是本项目的职责划分，Node 的 ESM/包入口机制依据 [官方文档](https://nodejs.org/api/packages.html)。
+历史说明：v0.2 及之前的 Playwright 常驻服务（`src/browser/`、`src/service/`、DOM 适配器、打包发布链）已在 v0.3 移除，由纯 HTTP MTOP 客户端替代；v0.3 同步合并 `scripts/`+`tests/` 为 `tools/`、移除 `examples/`。调研背景见 `docs/research/direct-api.md`。

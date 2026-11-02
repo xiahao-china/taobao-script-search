@@ -17,6 +17,7 @@ tmp/
 
 # Browser sessions, authentication and personal archives: never publish.
 /.runtime/
+/cookie.json
 /.profiles/
 /.session/
 /legacy/

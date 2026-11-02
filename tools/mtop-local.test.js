@@ -60,6 +60,28 @@ assert.equal(summary.hasSignToken, true);
 assert.equal(summary.hasLoginState, true);
 console.log('cookie-store OK:', JSON.stringify(summary));
 
-// 4. 限速文件落盘确认
+// 4. 根目录 cookie.json：简单格式解析 + 读写同源 + 登录态判定
+import { loadCookies, saveCookies, rootCookiePath } from '../src/core/cookie-store.js';
+import { writeFile, mkdtemp } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+process.env.TAOBAO_COOKIE_FILE = join(await mkdtemp(join(tmpdir(), 'tb-cookie-')), 'cookie.json');
+await writeFile(rootCookiePath(), JSON.stringify({ cookie: 'cookie2=abc; unb=42; junk-no-separator' }));
+const loaded = await loadCookies();
+assert.equal(loaded.cookies.unb.value, '42');
+assert.equal(cookieSummary(loaded).hasLoginState, true);
+await saveCookies(loaded); // 续签写回应落回同一文件
+const roundTrip = JSON.parse(await readFile(rootCookiePath(), 'utf8'));
+assert.equal(roundTrip.cookies.cookie2.value, 'abc');
+assert.equal(cookieSummary(await loadCookies()).hasLoginState, true, '内部格式应能再读回');
+console.log('cookie.json OK:', rootCookiePath());
+
+// 5. 未配置登录态时应判 false（占位符不会误判为已登录）
+process.env.TAOBAO_COOKIE_FILE = join(tmpdir(), 'tb-cookie-empty-' + Date.now(), 'cookie.json');
+const empty = await loadCookies();
+assert.equal(cookieSummary(empty).hasLoginState, false);
+console.log('empty-store OK');
+
+// 6. 限速文件落盘确认
 await rm(new URL('../.runtime/mtop-pacing.json', import.meta.url), { force: true }).catch(() => {});
 console.log('all OK');

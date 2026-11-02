@@ -15,7 +15,8 @@ taobao-script-search/
 │   ├── core/
 │   │   ├── mtop-client.js              MTOP 请求客户端：MD5 签名、token 自动续签、
 │   │   │                               跨进程限速（1.5–3.0s 抖动）、风控报错
-│   │   ├── cookie-store.js             Cookie 罐：.runtime/mtop-cookies.json 读写、
+│   │   ├── cookie-store.js             Cookie 罐：根目录 cookie.json（优先）与
+│   │   │                               .runtime/mtop-cookies.json（回退）读写、
 │   │   │                               Set-Cookie 合并、过期清理、Cookie 头构造
 │   │   ├── config.js                   项目/运行时目录解析
 │   │   ├── errors.js                   统一结果与错误（TaobaoError）
@@ -33,8 +34,10 @@ taobao-script-search/
 │   ├── api-contract.md                 输出契约（字段与错误码）
 │   ├── project-structure.md            本文件
 │   └── research/direct-api.md          2026-10 直接 HTTP 调研归档
+├── cookie.example.json                 Cookie 配置模板（进仓库）；复制为 cookie.json 使用
+├── cookie.json                         使用者的 Cookie（gitignore，等同登录态，勿外发）
 └── .runtime/                           本地运行时（gitignore）：
-    ├── mtop-cookies.json               Cookie 缓存（明文，等同登录态，勿外发）
+    ├── mtop-cookies.json               Cookie 缓存回退（未提供 cookie.json 时使用）
     ├── mtop-pacing.json                跨进程限速排队记录
     └── last-catalog.json               debug-catalog 的最近 dump
 ```

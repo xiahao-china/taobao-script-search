@@ -1,5 +1,6 @@
-import { readFile, writeFile, mkdir } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { readFile, writeFile, mkdir, access } from 'node:fs/promises';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { runtimePaths } from './config.js';
 
 // MTOP H5 网关只挂 .taobao.com 域；tmall 域 Cookie 不发送，减少指纹噪音。
@@ -9,16 +10,41 @@ export function cookieStorePath(runtimeDir) {
   return join(runtimePaths(runtimeDir || undefined).directory, 'mtop-cookies.json');
 }
 
+// 根目录 cookie.json：面向使用者的显式配置（模板见 cookie.example.json），
+// 优先于 .runtime/ 自动缓存。支持两种格式：
+//   简单格式：{"cookie": "name=value; name2=value2"}
+//   内部格式：{"cookies": {"name": {"value": "...", "domain": "...", "expires": ...}}}（令牌自动续签后写回的形态）
+// 可用环境变量 TAOBAO_COOKIE_FILE 指定其他路径（测试与多账号场景用）。
+export function rootCookiePath() {
+  return process.env.TAOBAO_COOKIE_FILE
+    || join(resolve(dirname(fileURLToPath(import.meta.url)), '..', '..'), 'cookie.json');
+}
+
+async function existingStorePath(runtimeDir) {
+  if (process.env.TAOBAO_COOKIE_FILE) return process.env.TAOBAO_COOKIE_FILE; // 显式指定即独占，不回退
+  const root = rootCookiePath();
+  try {
+    await access(root);
+    return root;
+  } catch { /* 根目录未提供 cookie.json，回退到 .runtime 缓存 */ }
+  return cookieStorePath(runtimeDir);
+}
+
 export async function loadCookies(runtimeDir) {
   try {
-    const raw = JSON.parse(await readFile(cookieStorePath(runtimeDir), 'utf8'));
+    const raw = JSON.parse(await readFile(await existingStorePath(runtimeDir), 'utf8'));
+    if (raw && typeof raw.cookie === 'string' && raw.cookie.trim()) {
+      const store = { syncedAt: null, sync: null, cookies: {} };
+      mergeCookieString(store, raw.cookie);
+      return store;
+    }
     if (raw && typeof raw.cookies === 'object' && raw.cookies) return { syncedAt: raw.syncedAt ?? null, sync: raw.sync ?? null, cookies: raw.cookies };
   } catch { /* 首次使用或文件损坏时都从空罐开始。 */ }
   return { syncedAt: null, sync: null, cookies: {} };
 }
 
 export async function saveCookies(store, runtimeDir) {
-  const path = cookieStorePath(runtimeDir);
+  const path = await existingStorePath(runtimeDir);
   await mkdir(dirname(path), { recursive: true });
   await writeFile(path, JSON.stringify(store, null, 2) + '\n');
 }

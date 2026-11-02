@@ -11,8 +11,9 @@ const help = `淘宝查询：纯 HTTP MTOP 直连（零浏览器依赖，即用�
   taobao detail <商品ID> --spec-id <规格ID> | --spec '{...}' | --labels '[...]'
   taobao batch --file examples/batch.json [--output artifacts/result.json]
   taobao sync-cookie --cookie-string "a=b; c=d"   导入 Cookie（或 --stdin 从管道读入）
-查询读取 .runtime/mtop-cookies.json 直接请求 h5api.m.taobao.com，毫秒级返回。
-首次使用：浏览器 F12 复制 taobao.com 的 Cookie 字符串后执行一次 sync-cookie；登录态失效时重导。
+首次使用：复制仓库根目录 cookie.example.json 为 cookie.json，把 cookie 字段替换成
+浏览器里 taobao.com 的完整 Cookie 字符串（获取方法见 README「配置 Cookie」）；
+或执行一次 sync-cookie 导入。登录态失效时更新 cookie.json 即可。
 内置限速：相邻 MTOP 请求间隔 1.5–3.0 秒（跨进程生效），触发滑块会明确报 AUTH_REQUIRED。`;
 
 function envelope(operation, payload) {
@@ -43,6 +44,14 @@ async function syncCookie(values) {
 }
 
 async function mtopCommand(operation, positionals, values, control) {
+  const runtimeDir = values['runtime-dir'] || null;
+  const store = await loadCookies(runtimeDir);
+  if (!cookieSummary(store).hasLoginState) {
+    throw new TaobaoError('AUTH_REQUIRED',
+      '尚未配置淘宝登录 Cookie。两种配置方式：'
+      + '1) 复制仓库根目录 cookie.example.json 为 cookie.json，把 cookie 字段替换为浏览器中 taobao.com 的完整 Cookie 字符串（F12 → Network → 任意请求 → Cookie 请求头）；'
+      + '2) 执行 taobao sync-cookie --cookie-string "name=value; ..."。详见 README「配置 Cookie」。');
+  }
   const adapter = new MtopAdapter({
     runtimeDir: values['runtime-dir'] || null,
     ...(values.timeout ? { timeoutMs: Number(values.timeout) * 1000 } : {}),

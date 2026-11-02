@@ -1,0 +1,4 @@
+{
+  "_说明": "两步启用：1) 复制本文件为同目录下的 cookie.json（cookie.json 已被 .gitignore 排除，不会上传仓库）；2) 把下面 cookie 字段的值整体替换为你在浏览器里复制的 taobao.com 完整 Cookie 字符串，保存即可。获取方法：登录淘宝后 F12 打开开发者工具 → Network 标签 → 随便刷新一个 taobao.com 页面 → 点任意请求 → Request Headers 里的 Cookie，整段复制。登录态一般维持数天到两周，查询报 AUTH_REQUIRED 时更新 cookie.json 即可。",
+  "cookie": "把整段 Cookie 粘贴到这里（形如 name1=value1; name2=value2）"
+}

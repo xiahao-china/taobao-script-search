@@ -14,10 +14,9 @@
 ## 快速开始
 
 ```bash
-# 1. 首次使用：浏览器 F12 → Application → Cookies → 复制 taobao.com 下的 Cookie 字符串
-node bin/taobao.js sync-cookie --cookie-string "cookie2=...; unb=...; ..."
-#    或从文件/管道导入：
-node bin/taobao.js sync-cookie --stdin < cookie.txt
+# 1. 首次使用：复制根目录 cookie.example.json 为 cookie.json，
+#    把 cookie 字段替换成你浏览器里 taobao.com 的完整 Cookie 字符串
+cp cookie.example.json cookie.json
 
 # 2. 查询
 node bin/taobao.js search "M3盘头螺丝" --limit 5
@@ -47,7 +46,17 @@ node bin/taobao.js batch --file 批量清单.json --output artifacts/quotes.json
 
 `specs` 缺省时该商品只返回规格树（getSpecs），适合先探再选。
 
-Cookie 明文存于 `.runtime/mtop-cookies.json`（已 gitignore），等同登录态，不要提交或外发。
+### 配置 Cookie
+
+淘宝对匿名请求强制风控（RGV587 拦截），必须携带已登录浏览器的 Cookie：
+
+1. 用 Chrome/Edge 登录 [taobao.com](https://www.taobao.com)
+2. 按 F12 打开开发者工具 → **Network** 标签 → 刷新页面 → 点任意一个请求 → Request Headers 里的 `Cookie`，**整段复制**（也可从 Application → Cookies 面板逐条拼）
+3. 复制根目录 `cookie.example.json` 为 `cookie.json`，把 `cookie` 字段的值整体替换为刚才的字符串，保存
+
+`cookie.json` 已被 `.gitignore` 排除，**不会**被提交或上传；它等同你的登录态，也不要手动外发。查询时若未检测到登录态字段（`unb`/`cookie2`/`sgcookie`），CLI 会直接报 `AUTH_REQUIRED` 并给出配置指引，不会发起注定被拦的请求。
+
+`cookie.json` 支持两种格式：简单格式 `{"cookie": "name=value; ..."}`（手动编辑推荐）与内部格式 `{"cookies": {...}}`（签名令牌自动续签后写回的形态，二者通用）。也可用 `taobao sync-cookie --cookie-string "..."` / `--stdin` 导入；已登录的令牌续签会自动写回同一文件。环境变量 `TAOBAO_COOKIE_FILE` 可指定其他路径。
 
 ## 内置风控防护
 

@@ -54,8 +54,8 @@ export class MtopClient {
     this.options = {
       runtimeDir: null,
       timeoutMs: 15000,
-      minIntervalMs: Number(process.env.TAOBAO_MTOP_MIN_INTERVAL_MS) || 1500,
-      jitterMs: Number(process.env.TAOBAO_MTOP_JITTER_MS) || 1500,
+      minIntervalMs: Number(process.env.TAOBAO_MTOP_MIN_INTERVAL_MS) || 5000,
+      jitterMs: Number(process.env.TAOBAO_MTOP_JITTER_MS) || 5000,
       ...options,
     };
   }

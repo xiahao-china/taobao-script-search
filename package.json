@@ -1,6 +1,6 @@
 {
   "name": "taobao-script-search",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "description": "Pure HTTP MTOP client for Taobao product queries (no browser, no daemon)",
   "keywords": [
@@ -30,7 +30,8 @@
   "scripts": {
     "taobao": "node bin/taobao.js",
     "test": "node --test tools/mtop-local.test.js",
-    "probe:mtop": "node tools/probe-mtop.js"
+    "probe:mtop": "node tools/probe-mtop.js",
+    "pkg": "node tools/package-skill.mjs && powershell -NoProfile -Command \"Compress-Archive -Path .runtime/skill-stage/taobao-product-search -DestinationPath dist/taobao-product-search.zip -Force\""
   },
   "dependencies": {}
 }

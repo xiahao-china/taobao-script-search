@@ -60,7 +60,7 @@ export class MtopClient {
     };
   }
 
-  async request(api, version, data, { retry = 0, signal } = {}) {
+  async request(api, version, data, { retry = 0, signal, extraParams = null, referer = null } = {}) {
     checkAbort(signal);
     const store = await loadCookies(this.options.runtimeDir);
     const header = cookieHeader(store);
@@ -71,15 +71,16 @@ export class MtopClient {
     const dataJson = JSON.stringify(data);
     const sign = createHash('md5').update(`${token}&${timestamp}&${APP_KEY}&${dataJson}`).digest('hex');
     const url = new URL(`/h5/${api.toLowerCase()}/${version}/`, HOST);
-    url.search = new URLSearchParams({
+    const baseParams = {
       jsv: JSV, appKey: APP_KEY, t: timestamp, sign, api, v: version,
       type: 'originaljson', dataType: 'json', H5Request: 'true', data: dataJson,
-    }).toString();
+    };
+    url.search = new URLSearchParams({ ...baseParams, ...(extraParams || {}) }).toString();
     const headers = {
       Accept: 'application/json',
       'User-Agent': USER_AGENT,
-      Referer: 'https://h5.m.taobao.com/',
-      Origin: 'https://h5.m.taobao.com',
+      Referer: referer || 'https://h5.m.taobao.com/',
+      Origin: referer ? new URL(referer).origin : 'https://h5.m.taobao.com',
     };
     if (header) headers.Cookie = header;
     let response;
@@ -98,7 +99,7 @@ export class MtopClient {
     const newToken = (store.cookies._m_h5_tk?.value || '').split('_')[0];
     // 令牌过期：网关已通过 Set-Cookie 下发新 token，重签一次即可，不视为风控。
     if (codes.some(code => code.includes('TOKEN')) && newToken && newToken !== token && retry < 1) {
-      return this.request(api, version, data, { retry: retry + 1, signal });
+      return this.request(api, version, data, { retry: retry + 1, signal, extraParams, referer });
     }
     if (codes.some(code => AUTH_PATTERN.test(code))) {
       throw new TaobaoError('AUTH_REQUIRED', '淘宝登录态失效或触发风控验证。请先在浏览器登录淘宝，然后执行 taobao sync-cookie 同步 Cookie 后重试。', { ret });

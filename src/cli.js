@@ -13,6 +13,9 @@ const help = `淘宝查询：纯 HTTP MTOP 直连（零浏览器依赖，即用�
       清单格式：{"searches":[{"keyword":"...","options":{"limit":5}}],
                 "products":[{"itemId":"...","specs":[{"labels":["..."]}|null]}]}
       specs 传 null 时该商品只返回规格树；输出含 total/succeeded/failed 统计。
+  taobao orders [--page 1] [--tab all] [--pages N] [--output 订单.json]
+      已买到的宝贝（购物记录）。服务端固定每页 15 条；--pages N 从 --page 起
+      连翻 N 页（页间隔走全局限速）。tabCode 仅实测过 all；金额为字符串。
   taobao sync-cookie --cookie-string "a=b; c=d"   导入 Cookie（或 --stdin 从管道读入）
 首次使用：复制仓库根目录 cookie.example.json 为 cookie.json，把 cookie 字段替换成
 浏览器里 taobao.com 的完整 Cookie 字符串（获取方法见 README「配置 Cookie」）。
@@ -66,6 +69,22 @@ async function mtopCommand(operation, positionals, values, control) {
   };
   if (operation === 'search') return envelope('search', await adapter.search(positionals[1], queryOptions, control.signal));
   if (operation === 'specs') return envelope('specs', await adapter.getSpecs(positionals[1], queryOptions, control.signal));
+  if (operation === 'orders') {
+    const page = Number(values.page || 1);
+    const pages = Number(values.pages || 1);
+    if (!Number.isInteger(pages) || pages < 1 || pages > 50) throw new TaobaoError('INVALID_ARGUMENT', 'pages 须为 1–50 的整数。');
+    if (pages === 1) return envelope('orders', await adapter.getOrders({ page, ...(values.tab ? { tab: values.tab } : {}) }, control.signal));
+    // 连续翻页：逐页请求合并；最后一页照常返回，页码越界时该页 orders 为空即止。
+    const merged = [];
+    let last = null;
+    for (let offset = 0; offset < pages; offset++) {
+      const result = await adapter.getOrders({ page: page + offset, ...(values.tab ? { tab: values.tab } : {}) }, control.signal);
+      last = result;
+      merged.push(...result.data.orders);
+      if (!result.data.orders.length) break;
+    }
+    return envelope('orders', { data: { ...last.data, page, orders: merged }, meta: last.meta });
+  }
   if (operation === 'detail') {
     const selections = [values['spec-id'], values.spec, values.labels, values.default].filter(value => value !== undefined);
     if (selections.length !== 1) throw new TaobaoError('INVALID_ARGUMENT', 'detail 须且只能提供 --spec-id、--spec、--labels、--default 之一。');
@@ -85,6 +104,7 @@ export async function main() {
   try {
     const { values, positionals } = parseArgs({ allowPositionals: true, options: {
       help: { type: 'boolean', short: 'h' }, limit: { type: 'string' }, page: { type: 'string' }, sort: { type: 'string' },
+      pages: { type: 'string' }, tab: { type: 'string' },
       'spec-id': { type: 'string' }, spec: { type: 'string' }, labels: { type: 'string' }, default: { type: 'boolean' },
       file: { type: 'string' }, output: { type: 'string' },
       'cookie-string': { type: 'string' }, stdin: { type: 'boolean' },
@@ -98,8 +118,8 @@ export async function main() {
     let result;
     const control = { signal: controller.signal };
     if (operation === 'sync-cookie') result = await syncCookie(values);
-    else if (['search', 'specs', 'detail', 'batch'].includes(operation)) result = await mtopCommand(operation, positionals, values, control);
-    else throw new TaobaoError('INVALID_ARGUMENT', `未知命令：${operation}。可用：search / specs / detail / batch / sync-cookie。`);
+    else if (['search', 'specs', 'detail', 'batch', 'orders'].includes(operation)) result = await mtopCommand(operation, positionals, values, control);
+    else throw new TaobaoError('INVALID_ARGUMENT', `未知命令：${operation}。可用：search / specs / detail / batch / orders / sync-cookie。`);
     process.removeListener('SIGINT', cancel);
     const rendered = JSON.stringify(result, null, 2) + '\n';
     if (values.output) { const path = resolve(values.output); await mkdir(dirname(path), { recursive: true }); await writeFile(path, rendered); }

@@ -5,6 +5,21 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-11-03
+
+### Added
+
+- Purchase history (`orders` command / `getOrders` SDK method): the
+  `已买到的宝贝` list via `mtop.taobao.order.queryboughtlistV2` v1.0 —
+  orderId (full precision, from object keys), shop, status, paid/total/discount
+  (strings), items with title/sku/qty/price/pic/auctionId. Server fixes the
+  page size at 15; `--pages N` merges consecutive pages. Requires
+  `ecode=1` login-request flags and the buyertrade referer; pagination lives
+  in `meta.page.fields` (currentPage/totalPage/totalNumber).
+- `MtopClient.request` accepts `extraParams` and `referer` per call.
+- Local tests for the order component-stream parser (multi-`sub`-cell orders,
+  money stripping, pagination, empty-response error).
+
 ## [0.3.0] - 2026-11-03
 
 ### Added

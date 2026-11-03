@@ -8,6 +8,7 @@ const client = createMtopClient();
 await client.search(keyword, options, signal);
 await client.getSpecs(itemId, options, signal);
 await client.getDetail(itemId, spec, options, signal);
+await client.getOrders(options, signal);
 await client.batch(batchInput, signal);
 ```
 
@@ -62,6 +63,24 @@ await client.batch(batchInput, signal);
 `data` 包含商品/规格标识、`specLabel`、`selections`、标题、链接、店铺、价格、库存、参数、图片和选中标签。价格含十进制 `amount`、`currency`、`basis`、原始显示文本、`scope` 及观察时间。`basis: api-displayed` 表示接口显示价，不等同于最终付款价。`meta.priceEvidence` 为 `sku-id-map` 或 `default-sku`。
 
 `stock` 保留接口的 quantity 值，可能有显示上限，不能用作包装件数。
+
+## getOrders(options, signal)
+
+购物记录（已买到的宝贝），接口 `mtop.taobao.order.queryboughtlistV2` v1.0。可选 `page`（正整数，默认 1）与 `tab`（订单页签码，仅实测过 `all`）。服务端固定每页 15 条。
+
+```js
+const result = await client.getOrders({ page: 1 }, signal);
+// result.data: { page, tab, orders, pagination }
+// pagination: { currentPage, totalPage, pageSize, totalNumber }
+// orders[i]: {
+//   orderId,   // 全精度订单号（字符串）
+//   shopName, status,                    // 状态文案如「买家已付款」「交易成功」
+//   paid, total, discount,               // 金额字符串（「￥x.xx」剥离而来），缺失为 null
+//   items: [{ title, skuText, quantity, price, auctionId, pic }]
+// }
+```
+
+订单号取自响应组件对象键（JSON number 会丢精度），17 位保持原样。`price` 取 `priceInfo` 中第一个可剥离的数值字段（actualTotalFee → realTotal → promotion → original）。无订单数据抛 `NO_RESULTS`；登录态失效抛 `AUTH_REQUIRED`。页间隔沿用全局限速，连续翻页请在调用方自控。
 
 ## batch(input, signal)
 

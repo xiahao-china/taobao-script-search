@@ -23,6 +23,8 @@ node bin/taobao.js search "M3盘头螺丝" --limit 5
 node bin/taobao.js specs 786222261977
 node bin/taobao.js detail 786222261977 --labels '["M3*8（200个）"]'
 node bin/taobao.js batch --file 批量清单.json --output artifacts/quotes.json
+node bin/taobao.js orders --page 1            # 购物记录（已买到的宝贝）
+node bin/taobao.js orders --pages 3 --output orders.json
 ```
 
 批量清单格式（`searches` 与 `products` 可只留其一；单失败不影响其余任务）：
@@ -73,11 +75,12 @@ const list = await client.search('M3盘头螺丝', { limit: 5 });
 const specs = await client.getSpecs('786222261977');
 const chosen = specs.data.variants.find(value => value.label === 'M3*8（200个）');
 const detail = await client.getDetail('786222261977', { specId: chosen.specId });
+const orders = await client.getOrders({ page: 1 });
 ```
 
 所有操作共用 `{ ok, operation, data, error, meta }` 输出封装。金额与 ID 使用字符串；列表价格为引流初筛价，**指定规格的详情（`sku2info` 按 SKU 绑定）才用于核价**。`meta` 标注观察时间、价格依据与字段覆盖；无法确认的字段保持 `null`。
 
-CLI 与 SDK 是同一实现（`search` / `getSpecs` / `getDetail` / `batch`）。接口输出契约见 [docs/api-contract.md](docs/api-contract.md)；目录说明见 [docs/project-structure.md](docs/project-structure.md)。
+CLI 与 SDK 是同一实现（`search` / `getSpecs` / `getDetail` / `getOrders` / `batch`）。接口输出契约见 [docs/api-contract.md](docs/api-contract.md)；目录说明见 [docs/project-structure.md](docs/project-structure.md)。
 
 ## 调试与测试（开发工具，均在 tools/）
 

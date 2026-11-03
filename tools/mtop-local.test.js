@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildMtopSpecs, recordPrice } from '../src/adapters/taobao/mtop.js';
 import { resolveSpec, skuPrice } from '../src/adapters/taobao/specs.js';
+import { extractOrders, assertOrdersPayload } from '../src/adapters/taobao/orders.js';
 import { mergeSetCookies, mergeCookieString, cookieHeader, cookieSummary, loadCookies, saveCookies, rootCookiePath } from '../src/core/cookie-store.js';
 
 // ── 1. buildMtopSpecs + resolveSpec + skuPrice 全链路（合成 catalog）
@@ -117,4 +118,57 @@ test('cookie store: 无主配置时回退 .runtime 缓存', async () => {
   isolate(dir); // cookie.json 不存在 → 回退 .runtime（此刻也为空）
   const empty = await loadCookies();
   assert.equal(cookieSummary(empty).hasLoginState, false);
+});
+
+// ── 5. 订单解析：queryboughtlistV2 v1.0 组件流（按真实响应结构合成）
+test('orders: 组件流解析出订单、金额剥离与分页', () => {
+  const payload = {
+    data: {
+      meta: { page: { fields: { currentPage: 1, totalPage: 158, pageSize: 15, totalNumber: 2370 } } },
+      group: [
+        {
+          // 键为全精度订单号（JSON number 会丢精度，必须用对象键）
+          '5127387411622226723': [
+            { cellType: 'storage', cellData: [{ tag: 'storage', fields: { mainOrderId: 5127387411622227000, sellerNick: '爪宠快食', subAuctionIds: [1080730764518] } }] },
+            { cellType: 'head', cellData: [
+              { tag: 'seller', fields: { shopName: '爪宠快食官方店', nick: '爪宠快食' } },
+              { tag: 'status', fields: { text: '买家已付款' } },
+            ] },
+            { cellType: 'sub', cellData: [
+              { tag: 'item', fields: { title: '紫铜接线端子', skuText: '加厚紫铜OT-40A（2只）', quantity: '2', priceInfo: { actualTotalFee: null, realTotal: null, promotion: '￥2.01' }, pic: '//img.alicdn.com/x.jpg' } },
+            ] },
+            { cellType: 'sub', cellData: [
+              { tag: 'item', fields: { title: '第二件商品', skuText: null, quantity: '1', priceInfo: { actualTotalFee: '￥5.00' }, pic: null } },
+            ] },
+            { cellType: 'pay', cellData: [{ tag: 'pay', fields: {
+              totalFee: { value: '￥7.01' }, actualFee: { value: '￥0.21' }, discountFee: { value: '￥1.80' },
+            } }] },
+          ],
+        },
+      ],
+    },
+  };
+  const { orders, pagination } = extractOrders(payload);
+  assert.equal(orders.length, 1);
+  const order = orders[0];
+  assert.equal(order.orderId, '5127387411622226723', '订单号取对象键，全精度');
+  assert.equal(order.shopName, '爪宠快食官方店');
+  assert.equal(order.status, '买家已付款');
+  assert.equal(order.paid, '0.21');
+  assert.equal(order.total, '7.01');
+  assert.equal(order.discount, '1.80');
+  assert.equal(order.items.length, 2);
+  assert.equal(order.items[0].price, '2.01');
+  assert.equal(order.items[0].quantity, 2);
+  assert.equal(order.items[0].auctionId, '1080730764518');
+  assert.equal(order.items[0].pic, 'https://img.alicdn.com/x.jpg');
+  assert.equal(order.items[1].price, '5.00');
+  assert.deepEqual(pagination, { currentPage: 1, totalPage: 158, pageSize: 15, totalNumber: 2370 });
+  // assertOrdersPayload：有数据直接透传
+  const passed = assertOrdersPayload(payload);
+  assert.equal(passed.orders.length, 1);
+});
+
+test('orders: 空响应抛 NO_RESULTS', () => {
+  assert.throws(() => assertOrdersPayload({ data: { meta: {}, group: [] } }), /NO_RESULTS|订单接口未返回/);
 });

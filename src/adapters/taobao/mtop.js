@@ -2,6 +2,15 @@ import { TaobaoError, requireId } from '../../core/errors.js';
 import { parsePrice } from '../../core/money.js';
 import { MtopClient, parseBody } from '../../core/mtop-client.js';
 import { extractCatalog, resolveSpec, publicSpecs, skuPrice } from './specs.js';
+import { assertOrdersPayload } from './orders.js';
+
+const ORDER_TAB_PATTERN = /^[a-z_]{2,20}$/;
+// 订单接口挂在「已买到的宝贝」页面上下文；网关要求登录请求标记（ecode=1）。
+const ORDER_REQUEST = {
+  extraParams: { ecode: '1', AntiCreep: 'true', AntiFlood: 'true', LoginRequest: 'true', ttid: '##h5' },
+  referer: 'https://buyertrade.taobao.com/trade/itemlist/list_bought_items.htm',
+};
+const ORDER_API = ['mtop.taobao.order.queryboughtlistV2', '1.0'];
 
 const SORTS = { default: '', 'price-asc': 'price-asc', 'price-desc': 'price-desc', sales: 'sale-desc' };
 const clean = value => String(value || '').replace(/\s+/g, ' ').trim();
@@ -227,6 +236,28 @@ export class MtopAdapter {
     requireId(itemId);
     const catalog = await this.fetchCatalog(itemId, signal);
     return this.detailFromCatalog(catalog, itemId, spec);
+  }
+
+  // 购物记录（已买到的宝贝）。服务端固定每页 15 条；page 为正整数，
+  // tab 为订单页签（all/...），缺省 all。
+  async getOrders(options = {}, signal) {
+    const params = { page: 1, tab: 'all', ...options };
+    if (!Number.isInteger(params.page) || params.page < 1) {
+      throw new TaobaoError('INVALID_ARGUMENT', 'page 须为正整数。');
+    }
+    if (!ORDER_TAB_PATTERN.test(params.tab)) {
+      throw new TaobaoError('INVALID_ARGUMENT', 'tab 须为 2–20 位小写字母/下划线（已验证的值：all；其他页签码未经实测）。');
+    }
+    const payload = await this.client.request(ORDER_API[0], ORDER_API[1], {
+      spm: 'a2141.7756461.2.6', page: params.page, tabCode: params.tab, appVersion: '1.0', appName: 'tborder',
+    }, { signal, ...ORDER_REQUEST });
+    const { orders, pagination } = assertOrdersPayload(payload);
+    return {
+      data: {
+        page: params.page, tab: params.tab, orders, pagination,
+      },
+      meta: { provider: 'mtop-http-orders', observedAt: new Date().toISOString() },
+    };
   }
 
   async batch(input, signal) {

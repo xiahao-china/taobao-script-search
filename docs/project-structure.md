@@ -14,20 +14,32 @@ taobao-script-search/
 │   ├── cli.js                          参数解析、sync-cookie、JSON 输出
 │   ├── core/
 │   │   ├── mtop-client.js              MTOP 请求客户端：MD5 签名、token 自动续签、
-│   │   │                               跨进程限速（1.5–3.0s 抖动）、风控报错
+│   │   │                               跨进程限速（5–10s 抖动，原子写入排队记录）、
+│   │   │                               风控报错
 │   │   ├── cookie-store.js             Cookie 罐：根目录 cookie.json（优先）与
 │   │   │                               .runtime/mtop-cookies.json（回退）读写、
 │   │   │                               Set-Cookie 合并、过期清理、Cookie 头构造
 │   │   ├── config.js                   项目/运行时目录解析
 │   │   ├── errors.js                   统一结果与错误（TaobaoError）
-│   │   └── money.js                    价格文本与口径
+│   │   ├── json-body.js                apiStack 内嵌 JSON 字符串解析（parseBody）
+│   │   ├── money.js                    价格文本与口径
+│   │   └── url.js                      图片/链接协议归一化（normalizeUrl）
 │   └── adapters/taobao/
-│       ├── mtop.js                     search / specs / detail / batch 纯 HTTP 实现；
+│       ├── mtop.js                     search / specs / detail / orders /
+│       │                               getReviewSummary / batch 纯 HTTP 实现；
 │       │                               详情双保险 getdetail/6.0 → pcdetail.data.get/1.0
-│       └── specs.js                    规格解析通用件：extractCatalog、resolveSpec、
-│                                       skuPrice（纯函数）
+│       ├── specs.js                    规格解析通用件：extractCatalog、resolveSpec、
+│       │                               skuPrice（纯函数）
+│       └── orders.js                   订单组件流解析：mapOrder、extractOrders、
+│                                       assertOrdersPayload（纯函数）
+├── skill/                              WorkBuddy skill 分发源（SKILL.md +
+│ │                                     scripts/taobao.mjs 包装器；npm run pkg 打包）
+│   └── ...
 ├── tools/                              开发阶段工具（测试 + 调试 + 探测）
-│   ├── mtop-local.test.js              本地逻辑回归：规格解析、Cookie 罐、单 SKU 边界
+│   ├── mtop-local.test.js              本地逻辑回归：规格解析、Cookie 罐、订单解析、
+│   │                                   单 SKU 边界
+│   ├── export-orders-csv.mjs           全量购物记录导出 CSV（appVersion 3.0 扁平
+│   │                                   组件流，断点续传）
 │   ├── debug-catalog.mjs               接口返回结构 dump 到 .runtime/last-catalog.json
 │   └── probe-mtop.js                   匿名 MTOP 连通性探测（无 Cookie）
 ├── docs/

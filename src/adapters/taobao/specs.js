@@ -36,11 +36,33 @@ export function resolveSpec(specs, input) {
     if (!variant) throw new TaobaoError('SKU_NOT_FOUND', '规格不属于该商品，或规格列表已变化。');
     selections = variant.selections;
   } else if (Array.isArray(input.labels)) {
-    selections = input.labels.map(label => {
-      const matches = specs.groups.flatMap(group => group.values.filter(value => value.label === label).map(value => ({ groupId: group.groupId, valueId: value.valueId })));
-      if (matches.length !== 1) throw new TaobaoError('SPEC_AMBIGUOUS', `规格标签未唯一匹配：${label}`);
-      return matches[0];
-    });
+    // 三级匹配：① 单标签精确命中某 variant 组合标签（用户常把 variant.label
+    // 整串传回）；② 标签数与组数一致时按位置对组消歧（跨组同名值不再误报
+    // SPEC_AMBIGUOUS）；③ 兜底全局唯一匹配。所有标签先做空白归一化，与
+    // buildMtopSpecs 的 clean 口径一致。
+    const wanted = input.labels.map(label => clean(label));
+    let resolved = null;
+    if (wanted.length === 1) {
+      const direct = specs.variants.find(entry => entry.label === wanted[0]);
+      if (direct) { variant = direct; resolved = direct.selections; }
+    }
+    if (!resolved && wanted.length === specs.groups.length && specs.groups.length) {
+      const positional = wanted.map((label, index) => {
+        const group = specs.groups[index];
+        const value = group?.values.find(entry => entry.label === label);
+        return value ? { groupId: group.groupId, valueId: value.valueId } : null;
+      });
+      // 位置全命中才采用；任何一位落空说明标签顺序与组序不同，交给兜底逻辑。
+      if (positional.every(Boolean)) resolved = positional;
+    }
+    if (!resolved) {
+      resolved = wanted.map(label => {
+        const matches = specs.groups.flatMap(group => group.values.filter(value => value.label === label).map(value => ({ groupId: group.groupId, valueId: value.valueId })));
+        if (matches.length !== 1) throw new TaobaoError('SPEC_AMBIGUOUS', `规格标签未唯一匹配：${label}`);
+        return matches[0];
+      });
+    }
+    selections = resolved;
   } else if (input.kind === 'default' && specs.mode === 'single-variant') {
     selections = [];
     variant = specs.variants[0] || null;

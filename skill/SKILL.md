@@ -23,14 +23,14 @@ agent_created: true
 运行捆绑脚本（Windows Git Bash 示例）：
 
 ```bash
-node "C:/Users/卡车猫/.workbuddy/skills/taobao-product-search/scripts/taobao.mjs" search "关键词" --limit 10
+node "<skill目录>/scripts/taobao.mjs" search "关键词" --limit 10
 ```
 
 包装器按以下优先级解析 Cookie，**分发后无需重新打包**：
 
 1. 环境变量 `TAOBAO_COOKIE_FILE`（显式指定即独占）
 2. **skill 同级的 `cookie.json`**（即 SKILL.md 旁边）——复制 `scripts/taobao-cli/cookie.example.json` 到 skill 根目录改名为 `cookie.json`、填入 Cookie 字符串即可
-3. 主项目 `D:\项目\taobao-script-search\.runtime\mtop-cookies.json`（开发机回退，默认走这条）
+3. 主项目 `<TAOBAO_PROJECT_ROOT 或开发机默认路径>\.runtime\mtop-cookies.json`（开发机回退，默认走这条；换机/分发时设 `TAOBAO_PROJECT_ROOT` 指向主项目）
 
 ⚠️ 若把填好的 `cookie.json` 放进 skill 后再执行打包，真实凭证会被打进 zip——对外分发前先移走它。
 
@@ -48,7 +48,8 @@ node "C:/Users/卡车猫/.workbuddy/skills/taobao-product-search/scripts/taobao.
 ... detail <itemId> --labels '["规格标签"]'
 # detail 输出自带 store 块：sellerType（B=天猫 / C=淘宝集市）+ isTmall、
 # DSR 三项分（含同行水平）、质量三评分、综合分、信用等级、店铺标签
-# （好评率/发货时效等）。个人转卖等无店铺数据时 store 为 null。
+# （好评率/发货时效等）。store 数据只在 PC 详情接口路径产出；H5 路径
+# 与个人转卖商品均为 null（meta.coverage.store 据实标记）。
 
 # 附带评价计数（多 1 次请求）
 ... detail <itemId> --labels '["规格标签"]' --reviews

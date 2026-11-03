@@ -12,19 +12,13 @@ await client.getOrders(options, signal);
 await client.batch(batchInput, signal);
 ```
 
-业务输出：
+## SDK 与 CLI 的输出边界
 
-```js
-{
-  ok: true,
-  operation: 'detail',
-  data: { /* 下列业务字段 */ },
-  error: null,
-  meta: { provider, observedAt }
-}
-```
+**SDK**（`createMtopClient()` 返回的实例）各方法直接返回 `{ data, meta }`；业务错误抛 `TaobaoError`（含 `code`/`message`/`details`），取消抛 `CANCELLED`。**不返回信封结构。**
 
-`meta.provider` 为 `mtop-http`（列表/规格）、`mtop-http-sku`（SKU 核价）或 `mtop-http-default`（默认规格）。业务错误返回 `ok: false` 与 `{ code, message, details }`。金额、商品 ID、SKU ID 和属性 ID 都保持字符串；缺失值为 `null`。
+`{ ok, operation, data, error, meta }` 统一信封是 **CLI 输出层**的包装：CLI 把 SDK 结果包成 `ok: true` 信封，把捕获到的异常经 `failure()` 包成 `ok: false` + `{ code, message, details }` 后打印并以退出码 1 结束。
+
+`meta.provider` 为 `mtop-http`（列表/规格）、`mtop-http-sku`（SKU 核价）、`mtop-http-default`（默认规格）、`mtop-http-orders`（订单）或 `mtop-http-rate`（评价计数）。金额、商品 ID、SKU ID 和属性 ID 都保持字符串；缺失值为 `null`。
 
 每个方法接受可选 `AbortSignal`（第三个参数 / batch 第二个参数），取消时抛 `CANCELLED`。
 
@@ -60,7 +54,9 @@ await client.batch(batchInput, signal);
 
 **价格口径**：指定了具体 SKU（`skuId` 非空）时只采信 `sku2info` 中该 SKU 的价格；接口缺失该 SKU 价格时抛 `SKU_PRICE_UNCONFIRMED`，**绝不回退到商品默认/引流价**。仅 `{ kind: 'default' }` 才返回默认价（`scope: item-default`）。
 
-`data` 包含商品/规格标识、`specLabel`、`selections`、标题、链接、店铺、价格、库存、参数、图片和选中标签。价格含十进制 `amount`、`currency`、`basis`、原始显示文本、`scope` 及观察时间。`basis: api-displayed` 表示接口显示价，不等同于最终付款价。`meta.priceEvidence` 为 `sku-id-map` 或 `default-sku`。
+`data` 包含商品/规格标识、`specId`、`skuId`、`specLabel`、`selections`、标题、链接、店铺、`store`、价格、库存、`attributes`、图片、`selectedLabels`。价格含十进制 `amount`、`currency`、`basis`、原始显示文本、`scope` 及观察时间。`basis: api-displayed` 表示接口显示价，不等同于最终付款价。`meta.priceEvidence` 为 `sku-id-map` 或 `default-sku`；`meta.coverage` 逐项标记 stock/shipping/attributes/description/store 的取到情况。
+
+`store` 块（零额外请求，来自 PC 详情接口路径）：`sellerType`（`B`=天猫/旗舰店，`C`=淘宝集市/个人）与 `isTmall`、`dsr`（描述/服务/物流三项 + 同行水平 `levelText`）、`scores`（质量三评分）、`overallScore`、`creditLevel`、`labels`（店铺标签）。**H5 详情路径的响应中没有店铺信誉节点，此时 `store: null`**（个人转卖商品同样为 null）；`meta.coverage.store` 据实标记。
 
 `stock` 保留接口的 quantity 值，可能有显示上限，不能用作包装件数。
 
@@ -80,7 +76,24 @@ const result = await client.getOrders({ page: 1 }, signal);
 // }
 ```
 
-订单号取自响应组件对象键（JSON number 会丢精度），17 位保持原样。`price` 取 `priceInfo` 中第一个可剥离的数值字段（actualTotalFee → realTotal → promotion → original）。无订单数据抛 `NO_RESULTS`；登录态失效抛 `AUTH_REQUIRED`。页间隔沿用全局限速，连续翻页请在调用方自控。
+订单号取自响应组件对象键（JSON number 会丢精度），17 位保持原样。`price` 取 `priceInfo` 中第一个可剥离的数值字段（actualTotalFee → realTotal → promotion → original）。同单多商品时各 `items[i].auctionId` 与 `storage.subAuctionIds[i]` 按索引一一对应。无订单数据抛 `NO_RESULTS`；登录态失效抛 `AUTH_REQUIRED`。页间隔沿用全局限速，连续翻页请在调用方自控；翻过最后一页会抛 `NO_RESULTS`，调用方可捕获后保留已拉取页。
+
+## getReviewSummary(itemId, signal)
+
+评价计数（1 次请求，`mtop.taobao.rate.detaillist.get` v4.0；rateList 内容丢弃）。CLI 侧经 `detail --reviews` 附带，输出合入 `data.reviewSummary`。
+
+```js
+// result.data: {
+//   itemId,
+//   total,          // 平台封顶值（如 2000），数字
+//   totalFuzzy,     // 模糊总数文案（如 "2000+"），真实数量级以此为准
+//   foldedDefault,  // 折叠的默认好评数，占比高提示刷单嫌疑
+//   foldedRatio,    // foldedDefault/total 百分比字符串，任一缺失为 null
+//   note,
+// }
+```
+
+`meta.provider` 为 `mtop-http-rate`。
 
 ## batch(input, signal)
 

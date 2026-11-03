@@ -10,7 +10,8 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 const skillDir = dirname(dirname(fileURLToPath(import.meta.url))); // scripts/ 的上一级
-const mainProject = 'D:\\项目\\taobao-script-search';
+// 开发机回退路径可用 TAOBAO_PROJECT_ROOT 覆盖（分发/换机场景），避免绑定个人绝对路径。
+const mainProject = process.env.TAOBAO_PROJECT_ROOT || 'D:\\项目\\taobao-script-search';
 const cli = join(skillDir, 'scripts', 'taobao-cli', 'bin', 'taobao.js');
 
 if (!process.env.TAOBAO_COOKIE_FILE) {

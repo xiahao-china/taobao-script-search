@@ -6,6 +6,7 @@
 import { writeFile, readFile, mkdir } from 'node:fs/promises';
 import { loadCookies, cookieSummary } from '../src/core/cookie-store.js';
 import { MtopClient, parseBody } from '../src/core/mtop-client.js';
+import { normalizeUrl } from '../src/core/url.js';
 
 const CUTOFF = Date.parse('2026-06-30T00:00:00+08:00'); // 含 6月30日当天
 const CSV_PATH = 'artifacts/taobao-orders-since-2026-06-30.csv';
@@ -53,7 +54,7 @@ function parsePage(payload) {
         subtotal: yuan(item.priceInfo?.actualTotalFee),
         unitPrice: yuan(item.priceInfo?.itemUnitPrice),
         listPrice: yuan(item.priceInfo?.promotion),
-        pic: typeof item.pic === 'string' && item.pic ? `https:${item.pic}` : null,
+        pic: normalizeUrl(item.pic),
         itemId: main.itemId != null ? String(main.itemId) : null,
       }));
     const payCell = Object.entries(data).find(([key]) => key.startsWith(`pay_${id}`))?.[1];

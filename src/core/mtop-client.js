@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { readFile, writeFile, mkdir } from 'node:fs/promises';
+import { readFile, writeFile, rename, rm, mkdir } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { TaobaoError, checkAbort } from './errors.js';
@@ -23,6 +23,8 @@ function pacingPath(runtimeDir) {
 // 跨进程令牌桶：请求前先占坑（把计划时刻写进文件），其他进程自动排队在其后。
 // 读-算-写存在窗口；用「写后复读校验」收敛竞争——发现被其他进程抢先写入
 // 更晚的计划时，以其为准顺延一次，避免双进程同时放行。
+// 写入用「临时文件 + rename 原子替换」：writeFile 先截断再写，并发读会读到
+// 半截 JSON，readLastAt 捕获后返回 0，导致限速被击穿。
 async function reserveSlot(runtimeDir, minIntervalMs, jitterMs, signal) {
   if (!Number.isFinite(minIntervalMs) || minIntervalMs <= 0) return;
   checkAbort(signal);
@@ -31,16 +33,29 @@ async function reserveSlot(runtimeDir, minIntervalMs, jitterMs, signal) {
   const readLastAt = async () => {
     try { return Number(JSON.parse(await readFile(path, 'utf8')).lastAt) || 0; } catch { return 0; }
   };
+  const writePlanned = async planned => {
+    const temp = `${path}.${process.pid}.${Date.now()}.tmp`;
+    await writeFile(temp, JSON.stringify({ lastAt: planned }));
+    try { await rename(temp, path); }
+    catch {
+      // rename 失败（如跨设备/平台限制）时退回直写，仍优于放弃占坑。
+      await writeFile(path, JSON.stringify({ lastAt: planned })).catch(() => {});
+      await rm(temp, { force: true }).catch(() => {});
+    }
+  };
   let planned = 0;
   for (let attempt = 0; attempt < 4; attempt++) {
     const lastAt = await readLastAt();
     const now = Date.now();
     planned = lastAt + minIntervalMs + Math.floor(Math.random() * Math.max(0, jitterMs));
     if (planned <= now) {
-      await writeFile(path, JSON.stringify({ lastAt: now }));
+      await writePlanned(now);
+      // 复读竞争校验同样适用于「无需等待」分支：被抢先写入更晚计划时照常排队。
+      const current = await readLastAt();
+      if (current > now) { planned = current; break; }
       return;
     }
-    await writeFile(path, JSON.stringify({ lastAt: planned }));
+    await writePlanned(planned);
     // 复读竞争校验：文件里仍是自己的计划 → 占坑成功。
     if (Number(await readLastAt()) === planned) break;
   }

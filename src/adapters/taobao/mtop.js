@@ -1,6 +1,7 @@
 import { TaobaoError, requireId } from '../../core/errors.js';
 import { parsePrice } from '../../core/money.js';
 import { MtopClient, parseBody } from '../../core/mtop-client.js';
+import { normalizeUrl } from '../../core/url.js';
 import { extractCatalog, resolveSpec, publicSpecs, skuPrice } from './specs.js';
 import { assertOrdersPayload } from './orders.js';
 
@@ -62,7 +63,7 @@ function mapItem(row) {
     shopName: row.shopName ?? row.nick ?? row.shop_nick ?? row.seller?.shopName ?? null,
     salesText: row.view_sales ?? row.salesText ?? row.sales ?? null,
     url: `https://item.taobao.com/item.htm?id=${itemId}`,
-    imageUrl: row.picUrl ?? row.pic_path ?? row.imageUrl ?? row.pic ?? null,
+    imageUrl: normalizeUrl(row.picUrl ?? row.pic_path ?? row.imageUrl ?? row.pic),
   };
 }
 
@@ -178,7 +179,10 @@ export class MtopAdapter {
   }
 
   // 详情接口双保险：H5 getdetail 优先，拿不到 skuBase/skuCore 时退回 PC 接口。
+  // 接口级失败（MTOP_ERROR/NETWORK_ERROR）同样降级到备用接口；取消与鉴权错误直接上抛。
   // 商品标题/店铺名与规格数据可能分布在不同层级，同一次响应里一并深搜提取。
+  // 注意：H5 路径的响应里没有店铺信誉节点，store 恒为 null；store 数据只在
+  // pcdetail 路径产出（README「店铺信誉」一节的 store:null 情形即由此而来）。
   async fetchCatalog(itemId, signal) {
     const attempts = [
       ['mtop.taobao.detail.getdetail', '6.0', { id: itemId, exParams: JSON.stringify({ id: itemId }) }],
@@ -187,9 +191,16 @@ export class MtopAdapter {
         exParams: JSON.stringify({ id: itemId, domain: 'https://item.taobao.com', path_name: '/item.htm' }),
       }],
     ];
-    let empty = false;
+    let lastError = null;
     for (const [api, version, data] of attempts) {
-      const payload = await this.client.request(api, version, data, { signal });
+      let payload;
+      try {
+        payload = await this.client.request(api, version, data, { signal });
+      } catch (error) {
+        if (error.code === 'CANCELLED' || error.code === 'AUTH_REQUIRED') throw error;
+        lastError = error;
+        continue;
+      }
       const catalog = extractCatalog(payload);
       if (catalog.skuBase || catalog.skuCore) {
         // item 对象不一定带 itemId 字段；skuBase/props 值对象只有 name，不会误匹配。
@@ -222,10 +233,10 @@ export class MtopAdapter {
           store: buildStoreRecord(sellerNode, storeNode),
         };
       }
-      empty = true;
     }
-    if (empty) return { skuBase: null, skuCore: null, itemId, item: null, store: null };
-    throw new TaobaoError('ITEM_UNAVAILABLE', '商品已失效、下架或接口未返回数据。');
+    // 两次尝试都没解析出规格数据：明确按失效商品报错，不返回空壳 catalog。
+    throw new TaobaoError('ITEM_UNAVAILABLE', '商品已失效、下架或接口未返回数据。',
+      lastError ? { lastFallbackError: lastError.message } : null);
   }
 
   async getSpecs(itemId, options = {}, signal) {

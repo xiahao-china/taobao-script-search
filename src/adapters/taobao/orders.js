@@ -3,6 +3,7 @@
 // cell 数组（storage/head/sub/pay/orderop）。金额都是「￥x.xx」文案，剥离为纯数字字符串。
 // 注意：响应里 17 位订单号若以 JSON number 出现会丢精度，订单号一律取对象键（字符串）。
 import { TaobaoError } from '../../core/errors.js';
+import { normalizeUrl } from '../../core/url.js';
 
 const yuan = value => {
   const text = String(value ?? '').replace(/[^0-9.]/g, '');
@@ -42,9 +43,11 @@ export function mapOrder(group) {
   const seller = fields0(cellFields(cells, 'head', 'seller')) || {};
   const status = fields0(cellFields(cells, 'head', 'status')) || {};
   const pay = fields0(cellFields(cells, 'pay', 'pay')) || {};
-  const items = cellFields(cells, 'sub', 'item').map(fields => {
-    const pic = typeof fields.pic === 'string' && fields.pic ? `https:${fields.pic}` : null;
-    const auctionId = Array.isArray(storage.subAuctionIds) ? String(storage.subAuctionIds[0] ?? '') : '';
+  // 同单多商品：sub cell 顺序与 storage.subAuctionIds 一一对应，必须按索引取，
+  // 否则第 2~N 件商品全部错挂第 1 件的 auctionId。
+  const items = cellFields(cells, 'sub', 'item').map((fields, index) => {
+    const pic = normalizeUrl(fields.pic);
+    const auctionId = Array.isArray(storage.subAuctionIds) ? String(storage.subAuctionIds[index] ?? '') : '';
     return {
       title: typeof fields.title === 'string' ? fields.title : null,
       skuText: fields.skuText ?? null,

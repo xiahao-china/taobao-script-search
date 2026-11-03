@@ -7,6 +7,56 @@ import { buildMtopSpecs, recordPrice, buildStoreRecord } from '../src/adapters/t
 import { resolveSpec, skuPrice } from '../src/adapters/taobao/specs.js';
 import { extractOrders, assertOrdersPayload } from '../src/adapters/taobao/orders.js';
 import { mergeSetCookies, mergeCookieString, cookieHeader, cookieSummary, loadCookies, saveCookies, rootCookiePath } from '../src/core/cookie-store.js';
+import { parsePrice } from '../src/core/money.js';
+import { normalizeUrl } from '../src/core/url.js';
+
+// ── 0. 价格解析：多位小数不被截断
+test('money: 3~4 位小数完整保留，2 位小数与整数不受影响', () => {
+  assert.equal(parsePrice(['¥0.015']).amount, '0.015', '元器件批发价 3 位小数不得截成 0.01');
+  assert.equal(parsePrice(['¥0.0085']).amount, '0.0085');
+  assert.equal(parsePrice(['¥12.99']).amount, '12.99');
+  assert.equal(parsePrice(['12.99']).amount, '12.99');
+  assert.equal(parsePrice(['¥1,234.5']).amount, '1234.5');
+});
+
+test('url: 协议相对地址补全，已带协议不重复拼接', () => {
+  assert.equal(normalizeUrl('//img.alicdn.com/x.jpg'), 'https://img.alicdn.com/x.jpg');
+  assert.equal(normalizeUrl('https://img.alicdn.com/x.jpg'), 'https://img.alicdn.com/x.jpg');
+  assert.equal(normalizeUrl('http://a.b/c'), 'http://a.b/c');
+  assert.equal(normalizeUrl(''), null);
+  assert.equal(normalizeUrl(null), null);
+});
+
+// ── 0b. resolveSpec 标签匹配：归一化 / 组合标签直配 / 按组消歧
+test('specs: labels 归一化、组合标签直配与跨组同名消歧', () => {
+  const catalog = {
+    skuBase: {
+      props: [
+        { pid: '1', name: '封装', values: [{ vid: '11', name: '0805' }, { vid: '12', name: '0603' }] },
+        { pid: '2', name: '阻值', values: [{ vid: '21', name: '10KΩ' }, { vid: '22', name: '1KΩ' }] },
+      ],
+      skus: [{ skuId: '100', propPath: '1:11;2:21' }],
+    },
+    skuCore: { sku2info: { '100': { price: { priceText: '0.015' } } } },
+  };
+  const specs = buildMtopSpecs('789', catalog);
+  // 多余空白归一化后仍可匹配
+  assert.equal(resolveSpec(specs, { labels: ['0805 ', '  10KΩ'] }).skuId, '100');
+  // 单标签 = variant 组合标签整串 → 直接命中
+  assert.equal(resolveSpec(specs, { labels: ['0805 / 10KΩ'] }).skuId, '100');
+  // 跨组同名值：全局匹配会歧义，按位置对组消歧后可用
+  const dup = buildMtopSpecs('790', {
+    skuBase: {
+      props: [
+        { pid: '1', name: '颜色', values: [{ vid: '11', name: '默认' }] },
+        { pid: '2', name: '套餐', values: [{ vid: '21', name: '默认' }] },
+      ],
+      skus: [{ skuId: '200', propPath: '1:11;2:21' }],
+    },
+    skuCore: { sku2info: { '200': { price: { priceText: '1.00' } } } },
+  });
+  assert.equal(resolveSpec(dup, { labels: ['默认', '默认'] }).skuId, '200');
+});
 
 // ── 1. buildMtopSpecs + resolveSpec + skuPrice 全链路（合成 catalog）
 test('specs: 组合规格解析与核价', () => {
@@ -129,7 +179,7 @@ test('orders: 组件流解析出订单、金额剥离与分页', () => {
         {
           // 键为全精度订单号（JSON number 会丢精度，必须用对象键）
           '5127387411622226723': [
-            { cellType: 'storage', cellData: [{ tag: 'storage', fields: { mainOrderId: 5127387411622227000, sellerNick: '爪宠快食', subAuctionIds: [1080730764518] } }] },
+            { cellType: 'storage', cellData: [{ tag: 'storage', fields: { mainOrderId: 5127387411622227000, sellerNick: '爪宠快食', subAuctionIds: [1080730764518, 1080730764519] } }] },
             { cellType: 'head', cellData: [
               { tag: 'seller', fields: { shopName: '爪宠快食官方店', nick: '爪宠快食' } },
               { tag: 'status', fields: { text: '买家已付款' } },
@@ -161,6 +211,7 @@ test('orders: 组件流解析出订单、金额剥离与分页', () => {
   assert.equal(order.items[0].price, '2.01');
   assert.equal(order.items[0].quantity, 2);
   assert.equal(order.items[0].auctionId, '1080730764518');
+  assert.equal(order.items[1].auctionId, '1080730764519', '同单第 2 件商品的 auctionId 应按索引对应，不得错挂第 1 件');
   assert.equal(order.items[0].pic, 'https://img.alicdn.com/x.jpg');
   assert.equal(order.items[1].price, '5.00');
   assert.deepEqual(pagination, { currentPage: 1, totalPage: 158, pageSize: 15, totalNumber: 2370 });

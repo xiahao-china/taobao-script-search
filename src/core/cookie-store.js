@@ -1,7 +1,6 @@
 import { readFile, writeFile, mkdir, access } from 'node:fs/promises';
-import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { runtimePaths } from './config.js';
+import { dirname, join } from 'node:path';
+import { projectRoot, runtimePaths } from './config.js';
 
 // MTOP H5 网关只挂 .taobao.com 域；tmall 域 Cookie 不发送，减少指纹噪音。
 const TAOBAO_DOMAIN = /(?:^|\.)taobao\.com$/i;
@@ -22,7 +21,7 @@ const TOKEN_KEYS = ['_m_h5_tk', '_m_h5_tk_enc'];
 
 export function rootCookiePath() {
   return process.env.TAOBAO_COOKIE_FILE
-    || join(resolve(dirname(fileURLToPath(import.meta.url)), '..', '..'), 'cookie.json');
+    || join(projectRoot, 'cookie.json');
 }
 
 function storeFromRaw(raw) {
@@ -51,7 +50,12 @@ export async function loadCookies(runtimeDir) {
   const runtimeCache = (await readStoreFile(cookieStorePath(runtimeDir))) || { syncedAt: null, sync: null, cookies: {} };
   if (!primary) return runtimeCache;
   const store = { ...primary, cookies: { ...primary.cookies } };
-  for (const key of TOKEN_KEYS) if (runtimeCache.cookies[key]) store.cookies[key] = runtimeCache.cookies[key];
+  // 只用运行时缓存中「未过期」的令牌覆盖：过期令牌会在发送时被过滤，
+  // 反而把主配置里仍有效的旧令牌顶掉，白白发一次无令牌请求。
+  for (const key of TOKEN_KEYS) {
+    const entry = runtimeCache.cookies[key];
+    if (entry && !isExpired(entry)) store.cookies[key] = entry;
+  }
   return store;
 }
 

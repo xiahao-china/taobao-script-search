@@ -5,6 +5,30 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Session warm-up (once per process): when `cna` (device-fingerprint cookie) is
+  missing, one homepage visit fetches it; when the sign token is missing, a
+  zero-cost dummy request (`mtop.common.getTimestamp`) exchanges it from the
+  gateway — business requests no longer bootstrap with an empty token and
+  accumulate bad fingerprint. Best-effort: failures fall through to the
+  existing token re-sign retry path.
+- `batch` now fails fast on `AUTH_REQUIRED` / `RISK_CONTROL`: the run aborts
+  immediately and reports `data.aborted = { code, message }` plus `data.note`;
+  remaining entries are not executed (no hammering the API with a broken
+  session).
+
+### Changed
+
+- Risk-control responses (`RGV587`) are now reported as a dedicated
+  `RISK_CONTROL` error instead of being lumped into `AUTH_REQUIRED` — the two
+  have different causes (request fingerprint/rate vs. login state) and
+  different remedies. `RISK_CONTROL` is deliberately never auto-retried;
+  `detail`'s API fallback also skips the second attempt on it (both H5 and PC
+  endpoints share the same gateway fingerprint).
+
 ## [0.5.0] - 2026-11-03
 
 ### Added

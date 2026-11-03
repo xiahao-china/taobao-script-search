@@ -3,7 +3,7 @@ import { test, after } from 'node:test';
 import { readFile, rm, mkdtemp, writeFile, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { buildMtopSpecs, recordPrice, buildStoreRecord } from '../src/adapters/taobao/mtop.js';
+import { buildMtopSpecs, recordPrice, buildStoreRecord, MtopAdapter } from '../src/adapters/taobao/mtop.js';
 import { resolveSpec, skuPrice } from '../src/adapters/taobao/specs.js';
 import { extractOrders, assertOrdersPayload } from '../src/adapters/taobao/orders.js';
 import { mergeSetCookies, mergeCookieString, cookieHeader, cookieSummary, loadCookies, saveCookies, rootCookiePath } from '../src/core/cookie-store.js';
@@ -263,4 +263,53 @@ test('store: DSR/质量分/标签/天猫标识映射，缺源返回 null', () =>
   // h5 路径两者皆无 → null（detail 输出 store:null）
   assert.equal(buildStoreRecord(null, null), null);
   assert.equal(buildStoreRecord({ shopName: 'x' }, { shopName: 'x' }), null, '只有店名不算店铺信誉数据');
+});
+
+// ── 7. 风控细分与批量 fail-fast（stub client，零网络）
+import { TaobaoError } from '../src/core/errors.js';
+
+function stubClient(script) {
+  // script: 逐次调用的返回值/异常队列；记录调用序列供断言。
+  const calls = [];
+  return {
+    calls,
+    request: async (api, version, data, options = {}) => {
+      calls.push({ api, data });
+      const next = script.shift();
+      if (next instanceof Error) throw next;
+      return next;
+    },
+  };
+}
+
+test('batch: 命中 AUTH_REQUIRED/RISK_CONTROL 立即终止，剩余条目不执行并带 aborted 说明', async () => {
+  const client = stubClient([
+    { data: {} }, // 第 1 条 search 正常返回（下游解析为空结果也无妨，只看条目数）
+    new TaobaoError('RISK_CONTROL', '触发淘宝风控拦截（RGV587）'),
+  ]);
+  const adapter = new MtopAdapter({ client });
+  const result = await adapter.batch({ searches: ['a', 'b', 'c'], products: [{ itemId: '123', specs: [null] }] }, undefined);
+  const { results, aborted, note } = result.data;
+  assert.equal(client.calls.length, 2, '第 2 条触发风控后不得再发任何请求');
+  assert.equal(results.length, 2, '只有已执行的条目出现在结果里');
+  assert.equal(aborted.code, 'RISK_CONTROL');
+  assert.ok(/提前终止/.test(note));
+});
+
+test('batch: 非致命错误（如 NO_RESULTS）不终止整批', async () => {
+  const client = stubClient([
+    new TaobaoError('NO_RESULTS', '无结果'),
+    { data: {} },
+  ]);
+  const adapter = new MtopAdapter({ client });
+  const result = await adapter.batch({ searches: ['a', 'b'] }, undefined);
+  assert.equal(result.data.results.length, 2, '单项失败不影响其余项');
+  assert.equal(result.data.aborted, undefined);
+});
+
+test('fetchCatalog: RISK_CONTROL 与 AUTH_REQUIRED 一样直接上抛，不浪费备用接口请求', async () => {
+  const client = stubClient([new TaobaoError('RISK_CONTROL', '风控')]);
+  const adapter = new MtopAdapter({ client });
+  await assert.rejects(adapter.fetchCatalog('123', undefined), error => error.code === 'RISK_CONTROL');
+  assert.equal(client.calls.length, 1, '风控按指纹拦，换接口无意义，不得回退重试');
 });

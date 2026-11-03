@@ -16,7 +16,7 @@ agent_created: true
 - **列表价 ≠ 实价**：search 返回的价格是引流初筛价（可能偏低也可能偏高）。给用户报价格前，必须对候选商品跑 `detail` 按 SKU 核价。
 - **凭证即登录态**：Cookie 等同用户淘宝登录态，绝不把 cookie 内容写进回复、文件或命令回显。
 - **订单号是字符串**：17 位订单号超 JS number 精度，解析一律用对象键；输出保持字符串。
-- **失败处理**：`AUTH_REQUIRED` = Cookie 过期/未配置，提示用户从浏览器重新复制并更新 cookie 文件；`ITEM_UNAVAILABLE` = 商品下架；触发滑块不会自动重试（防风控升级），直接告知用户。
+- **失败处理**：`AUTH_REQUIRED` = Cookie 过期/未配置，提示用户从浏览器重新复制并更新 cookie 文件；`RISK_CONTROL` = 风控拦截（RGV587，请求指纹/频率问题，与登录态无关），**刻意不自动重试**（重试加重封禁）——等待几分钟、在浏览器正常访问一次 taobao.com 后再试；`ITEM_UNAVAILABLE` = 商品下架。batch 命中 AUTH/RISK 会立即终止剩余条目（`data.aborted`），处理后重跑。
 
 ## 调用方式
 

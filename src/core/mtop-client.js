@@ -14,7 +14,13 @@ const APP_KEY = '12574478';
 const HOST = 'https://h5api.m.taobao.com';
 const JSV = '2.7.2';
 const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
-const AUTH_PATTERN = /USER_VALIDATE|RGV587|SESSION_EXPIRED|NEED_LOGIN|FAIL_SYS_ILLEGAL_ACCESS/i;
+// RGV587 是「请求指纹/频率被风控拦截」，与登录态无关（带有效 Cookie 也会触发），
+// 必须与 USER_VALIDATE 等真正的登录态问题分开报错、分开处置。
+const RISK_PATTERN = /RGV587/i;
+const AUTH_PATTERN = /USER_VALIDATE|SESSION_EXPIRED|NEED_LOGIN|FAIL_SYS_ILLEGAL_ACCESS/i;
+// 零成本匿名探针：签名对不对无所谓——网关拒签时照样 Set-Cookie 下发新令牌，
+// 响应体直接丢弃。用于裸会话领令牌，避免让业务请求带空令牌硬闯。
+const TOKEN_PROBE = ['mtop.common.getTimestamp', '1.0'];
 
 function pacingPath(runtimeDir) {
   return join(runtimePaths(runtimeDir || undefined).directory, 'mtop-pacing.json');
@@ -73,11 +79,43 @@ export class MtopClient {
       jitterMs: Number(process.env.TAOBAO_MTOP_JITTER_MS) || 5000,
       ...options,
     };
+    this.sessionWarmed = false;
   }
 
-  async request(api, version, data, { retry = 0, signal, extraParams = null, referer = null } = {}) {
+  // 会话预热（进程内至多一次，裸会话特征是风控重点关照对象）：
+  // 1) 缺 cna（设备指纹 Cookie）时先访问一次主页领取，之后保持稳定不换；
+  // 2) 缺签名令牌时先用零成本哑请求向网关换取 _m_h5_tk——避免业务请求带空
+  //    令牌硬闯、白白吃一次 TOKEN_EXPIRED 并累积坏指纹。预热是尽力而为：
+  //    失败静默放行，后续请求仍走原有的 TOKEN 重签链路兜底。
+  async warmSession(store, signal) {
+    if (this.sessionWarmed) return;
+    this.sessionWarmed = true;
+    try {
+      if (!store.cookies.cna) {
+        const response = await fetch('https://www.taobao.com/', {
+          headers: { 'User-Agent': USER_AGENT, Accept: 'text/html,application/xhtml+xml' },
+          redirect: 'manual',
+          signal: AbortSignal.timeout(10000),
+        });
+        mergeSetCookies(store, response.headers.getSetCookie());
+        await saveCookies(store, this.options.runtimeDir);
+      }
+      if (!store.cookies._m_h5_tk) {
+        await this.request(TOKEN_PROBE[0], TOKEN_PROBE[1], {}, { signal, probe: true });
+      }
+    } catch (error) {
+      if (error?.code === 'CANCELLED') throw error;
+    }
+  }
+
+  async request(api, version, data, { retry = 0, signal, extraParams = null, referer = null, probe = false } = {}) {
     checkAbort(signal);
-    const store = await loadCookies(this.options.runtimeDir);
+    let store = await loadCookies(this.options.runtimeDir);
+    if (!probe && (!store.cookies.cna || !store.cookies._m_h5_tk)) {
+      await this.warmSession(store, signal);
+      // 预热可能已把 cna/令牌写进磁盘缓存，重读一份保证签名用上新令牌。
+      store = await loadCookies(this.options.runtimeDir);
+    }
     const header = cookieHeader(store);
     await reserveSlot(this.options.runtimeDir, this.options.minIntervalMs, this.options.jitterMs, signal);
     checkAbort(signal);
@@ -116,8 +154,15 @@ export class MtopClient {
     if (codes.some(code => code.includes('TOKEN')) && newToken && newToken !== token && retry < 1) {
       return this.request(api, version, data, { retry: retry + 1, signal, extraParams, referer });
     }
+    if (codes.some(code => RISK_PATTERN.test(code))) {
+      // 刻意不自动重试：风控是按请求指纹拦的，原地重试只会加重封禁。
+      throw new TaobaoError('RISK_CONTROL',
+        '触发淘宝风控拦截（RGV587）：请求特征或频率被判不可信，与登录态无关。'
+        + '请等待几分钟到十几分钟，期间在浏览器正常访问一次 taobao.com 再重试；若连续触发请拉长请求间隔。',
+        { ret });
+    }
     if (codes.some(code => AUTH_PATTERN.test(code))) {
-      throw new TaobaoError('AUTH_REQUIRED', '淘宝登录态失效或触发风控验证。请先在浏览器登录淘宝，然后执行 taobao sync-cookie 同步 Cookie 后重试。', { ret });
+      throw new TaobaoError('AUTH_REQUIRED', '淘宝登录态失效。请先在浏览器登录淘宝，然后执行 taobao sync-cookie 同步 Cookie 后重试。', { ret });
     }
     if (!codes.some(code => code === 'SUCCESS')) {
       throw new TaobaoError('MTOP_ERROR', `MTOP 返回错误：${ret.join('; ') || `HTTP ${response.status}`}`, { ret });

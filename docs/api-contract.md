@@ -111,8 +111,10 @@ const result = await client.getOrders({ page: 1 }, signal);
 
 - `specs` 省略或传 `[null]` 时该商品只产生一项规格树结果；每个 spec 产生一项详情结果。
 - **同一商品的 catalog 只请求一次**，多规格在内存中复用解析。
-- 输出 `data = { results, total, succeeded, failed }`；单项失败不影响其余项，失败项带 `error: { code, message }`，整体 `ok` 恒为 `true`（部分失败通过 `failed > 0` 表达）。
+- 输出 `data = { results, total, succeeded, failed }`；单项失败不影响其余项，失败项带 `error: { code, message }`，整体 `ok` 恒为 `true`（部分失败通过 `failed > 0` 表达）。登录态失效（`AUTH_REQUIRED`）或风控拦截（`RISK_CONTROL`）会提前终止整批：`data.aborted = { code, message }` + `data.note`，剩余条目不执行（避免带坏状态逐项撞接口），处理后重跑即可。
 
 ## 常见错误
 
-`INVALID_ARGUMENT`、`AUTH_REQUIRED`（未配置 Cookie / 登录态失效 / 风控拦截）、`NETWORK_ERROR`、`NO_RESULTS`、`ITEM_UNAVAILABLE`、`SKU_NOT_FOUND`、`SKU_UNAVAILABLE`、`SPEC_AMBIGUOUS`、`SPEC_UNAVAILABLE`、`SKU_PRICE_UNCONFIRMED`、`DEFAULT_PRICE_UNCONFIRMED`、`CANCELLED`。
+`INVALID_ARGUMENT`、`AUTH_REQUIRED`（未配置 Cookie / 登录态失效）、`RISK_CONTROL`（风控拦截 RGV587：请求指纹/频率被判不可信，与登录态无关；刻意不自动重试）、`NETWORK_ERROR`、`NO_RESULTS`、`ITEM_UNAVAILABLE`、`SKU_NOT_FOUND`、`SKU_UNAVAILABLE`、`SPEC_AMBIGUOUS`、`SPEC_UNAVAILABLE`、`SKU_PRICE_UNCONFIRMED`、`DEFAULT_PRICE_UNCONFIRMED`、`CANCELLED`。
+
+会话预热：进程内首次请求前，若缺 `cna`（设备指纹 Cookie）会先访问一次 taobao.com 主页领取；若缺签名令牌会先用零成本哑请求（`mtop.common.getTimestamp`）向网关换取 `_m_h5_tk`。均为尽力而为，失败走原有令牌重签链路兜底。

@@ -197,7 +197,9 @@ export class MtopAdapter {
       try {
         payload = await this.client.request(api, version, data, { signal });
       } catch (error) {
-        if (error.code === 'CANCELLED' || error.code === 'AUTH_REQUIRED') throw error;
+        // 取消/登录态失效/风控拦截都不值得换接口再试：前两者与接口无关，
+        // RGV587 风控按请求指纹拦，H5 与 PC 接口走同一个网关指纹。
+        if (error.code === 'CANCELLED' || error.code === 'AUTH_REQUIRED' || error.code === 'RISK_CONTROL') throw error;
         lastError = error;
         continue;
       }
@@ -340,14 +342,24 @@ export class MtopAdapter {
     };
   }
 
+  // 批量执行：单项失败不影响其余项；但登录态失效（AUTH_REQUIRED）或风控拦截
+  // （RISK_CONTROL）会立即终止整批——那两种状态下继续请求只会逐项重复失败
+  // 并持续累积坏指纹（登录态体检：不带坏状态去撞接口）。
   async batch(input, signal) {
     const results = [];
+    const isFatal = error => error.code === 'AUTH_REQUIRED' || error.code === 'RISK_CONTROL';
+    let aborted = null;
+    const noteFatal = error => {
+      if (isFatal(error) && !aborted) aborted = { code: error.code, message: error.message };
+    };
     for (const entry of input.searches || []) {
+      if (aborted) break;
       const { keyword, options } = typeof entry === 'string' ? { keyword: entry, options: {} } : entry;
       try { results.push({ kind: 'search', keyword, result: await this.search(keyword, options, signal) }); }
-      catch (error) { results.push({ kind: 'search', keyword, error: { code: error.code || 'MTOP_ERROR', message: error.message } }); }
+      catch (error) { results.push({ kind: 'search', keyword, error: { code: error.code || 'MTOP_ERROR', message: error.message } }); noteFatal(error); }
     }
     for (const product of input.products || []) {
+      if (aborted) break;
       const specs = Array.isArray(product.specs) && product.specs.length ? product.specs : [null];
       // 同商品只拉一次 catalog，多规格在内存里复用——否则 N 个规格 = N 次详情请求。
       let catalog = null;
@@ -356,6 +368,7 @@ export class MtopAdapter {
         catalog = await this.fetchCatalog(product.itemId, signal);
       } catch (error) {
         for (const spec of specs) results.push({ kind: spec ? 'detail' : 'specs', itemId: product.itemId, error: { code: error.code || 'MTOP_ERROR', message: error.message } });
+        noteFatal(error);
         continue;
       }
       for (const spec of specs) {
@@ -364,12 +377,19 @@ export class MtopAdapter {
           results.push({ kind: spec ? 'detail' : 'specs', itemId: product.itemId, result });
         } catch (error) {
           results.push({ kind: spec ? 'detail' : 'specs', itemId: product.itemId, error: { code: error.code || 'MTOP_ERROR', message: error.message } });
+          if (isFatal(error)) { noteFatal(error); break; }
         }
       }
     }
     const failed = results.filter(item => item.error).length;
     return {
-      data: { results, total: results.length, succeeded: results.length - failed, failed },
+      data: {
+        results, total: results.length, succeeded: results.length - failed, failed,
+        ...(aborted ? {
+          aborted,
+          note: `批量在第 ${results.length} 项后提前终止（${aborted.code}）：登录态失效或风控拦截时继续执行只会逐项重复失败，剩余条目未执行。处理后重跑即可。`,
+        } : {}),
+      },
       meta: { provider: 'mtop-http', observedAt: new Date().toISOString() },
     };
   }

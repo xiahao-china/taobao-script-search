@@ -11,6 +11,8 @@ const ORDER_REQUEST = {
   referer: 'https://buyertrade.taobao.com/trade/itemlist/list_bought_items.htm',
 };
 const ORDER_API = ['mtop.taobao.order.queryboughtlistV2', '1.0'];
+// 评价计数接口：只要汇总字段，rateList 内容丢弃。
+const RATE_API = ['mtop.taobao.rate.detaillist.get', '4.0'];
 
 const SORTS = { default: '', 'price-asc': 'price-asc', 'price-desc': 'price-desc', sales: 'sale-desc' };
 const clean = value => String(value || '').replace(/\s+/g, ' ').trim();
@@ -61,6 +63,35 @@ function mapItem(row) {
     salesText: row.view_sales ?? row.salesText ?? row.sales ?? null,
     url: `https://item.taobao.com/item.htm?id=${itemId}`,
     imageUrl: row.picUrl ?? row.pic_path ?? row.imageUrl ?? row.pic ?? null,
+  };
+}
+
+// 店铺信誉块：sellerNode = pcdetail 顶层 seller（DSR 三项），
+// storeNode = componentsVO.storeCardVO（质量三评分/综合分/信用等级/标签）。
+// h5 getdetail 路径两者皆无 → 返回 null，detail 输出如实标 store:null。
+export function buildStoreRecord(sellerNode, storeNode) {
+  const sellerType = sellerNode?.sellerType ?? storeNode?.sellerType ?? null;
+  const dsr = Array.isArray(sellerNode?.evaluates)
+    ? sellerNode.evaluates.map(entry => ({
+      type: entry.type ?? null,
+      title: clean(entry.title),
+      score: clean(entry.score),
+      levelText: typeof entry.levelText === 'string' ? clean(entry.levelText) : null,
+    })) : null;
+  const scores = Array.isArray(storeNode?.evaluates)
+    ? storeNode.evaluates.map(entry => ({ title: clean(entry.title), score: clean(entry.score) }))
+    : null;
+  const labels = Array.isArray(storeNode?.labelList)
+    ? storeNode.labelList.map(entry => clean(entry?.contentDesc)).filter(Boolean) : null;
+  if (!sellerType && !dsr && !scores && !labels) return null;
+  return {
+    sellerType,
+    isTmall: sellerType === 'B',
+    dsr,
+    scores,
+    overallScore: typeof storeNode?.overallScore === 'string' ? clean(storeNode.overallScore) : null,
+    creditLevel: storeNode?.creditLevel ?? null,
+    labels,
   };
 }
 
@@ -163,29 +194,37 @@ export class MtopAdapter {
       if (catalog.skuBase || catalog.skuCore) {
         // item 对象不一定带 itemId 字段；skuBase/props 值对象只有 name，不会误匹配。
         // 店铺字段在不同响应层级名称不一，一趟扫描按优先级取出。
+        // sellerNode：B 店带 shopName；C 店（集市/个人转卖）只有 sellerNick+sellerType+evaluates。
+        // storeNode：B 店 storeCardVO 带 labelList+evaluates；C 店只剩 sellerType+creditLevel（无 evaluates）。
         const nodes = expand(payload);
-        let itemNode = null, sellerNode = null;
+        let itemNode = null, sellerNode = null, storeNode = null;
         for (const node of nodes) {
           if (!itemNode && typeof node?.title === 'string' && stripTags(node.title).length > 1) itemNode = node;
           if (!sellerNode) {
             if (typeof node?.shopName === 'string' && node.shopName) sellerNode = node;
+            else if (Array.isArray(node?.evaluates) && node.sellerType) sellerNode = node;
             else if (typeof node?.shopNameText === 'string' && node.shopNameText) sellerNode = node;
             else if (typeof node?.nick === 'string' && node.nick) sellerNode = node;
           }
-          if (itemNode && sellerNode) break;
+          if (!storeNode) {
+            if (Array.isArray(node?.labelList) && Array.isArray(node?.evaluates)) storeNode = node;
+            else if (node?.sellerType && node?.creditLevel != null && !Array.isArray(node?.evaluates)) storeNode = node;
+          }
+          if (itemNode && sellerNode && storeNode) break;
         }
         return {
           ...catalog,
           item: {
             title: itemNode ? itemNode.title : null,
             images: Array.isArray(itemNode?.images) ? itemNode.images : null,
-            shopName: sellerNode ? (sellerNode.shopName || sellerNode.shopNameText || sellerNode.nick) : null,
+            shopName: sellerNode ? (sellerNode.shopName || sellerNode.shopNameText || sellerNode.nick || sellerNode.sellerNick || null) : null,
           },
+          store: buildStoreRecord(sellerNode, storeNode),
         };
       }
       empty = true;
     }
-    if (empty) return { skuBase: null, skuCore: null, itemId, item: null };
+    if (empty) return { skuBase: null, skuCore: null, itemId, item: null, store: null };
     throw new TaobaoError('ITEM_UNAVAILABLE', '商品已失效、下架或接口未返回数据。');
   }
 
@@ -217,6 +256,7 @@ export class MtopAdapter {
         title: catalog.item?.title ? stripTags(catalog.item.title) : null,
         url: `https://item.taobao.com/item.htm?id=${itemId}`,
         shopName: catalog.item?.shopName || null,
+        store: catalog.store ?? null,
         price: { amount: price.amount, currency: price.currency, basis: price.basis, display: price.display, scope: selection.skuId ? 'selected-spec' : 'item-default', observedAt: new Date().toISOString() },
         stock: price.stock ?? null, shipping: null,
         attributes: specs.groups.map(group => ({ name: group.name, values: group.values.map(value => value.label) })),
@@ -227,7 +267,7 @@ export class MtopAdapter {
         provider: selection.skuId ? 'mtop-http-sku' : 'mtop-http-default',
         observedAt: new Date().toISOString(),
         priceEvidence: selection.skuId ? 'sku-id-map' : 'default-sku',
-        coverage: { stock: price.stock != null, shipping: false, attributes: specs.groups.length > 0, description: false },
+        coverage: { stock: price.stock != null, shipping: false, attributes: specs.groups.length > 0, description: false, store: Boolean(catalog.store) },
       },
     };
   }
@@ -257,6 +297,35 @@ export class MtopAdapter {
         page: params.page, tab: params.tab, orders, pagination,
       },
       meta: { provider: 'mtop-http-orders', observedAt: new Date().toISOString() },
+    };
+  }
+
+  // 评价计数（1 次请求，rateList 内容丢弃）。total 是平台封顶值（2000/1000 等），
+  // 真实数量级以 totalFuzzy 模糊文本为准；foldedDefault 为折叠的默认好评数，
+  // 占比高提示刷单嫌疑。平台已隐藏差评数（hideBadCount），无中差评分项可取。
+  async getReviewSummary(itemId, signal) {
+    requireId(itemId);
+    const payload = await this.client.request(RATE_API[0], RATE_API[1], {
+      auctionNumId: itemId, currentPage: '1', pageSize: '10', orderType: '',
+    }, { signal, referer: `https://item.taobao.com/item.htm?id=${itemId}` });
+    // 汇总字段实测为字符串（"2000"/"1629"），统一转数字；解析不了保持 null。
+    const toCount = value => {
+      const num = Number(value);
+      return Number.isFinite(num) && String(value).trim() !== '' ? num : null;
+    };
+    const total = toCount(payload?.total);
+    const folded = toCount(payload?.foldCount);
+    const fuzzy = [payload?.totalFuzzy, payload?.fuzzyRateCount].find(value => typeof value === 'string' && value) || null;
+    return {
+      data: {
+        itemId,
+        total,
+        totalFuzzy: fuzzy,
+        foldedDefault: folded,
+        foldedRatio: total && folded !== null ? `${Math.round((folded / total) * 100)}%` : null,
+        note: 'total 为平台封顶值，真实数量级见 totalFuzzy；foldedDefault 为折叠的默认好评数，占比高提示刷单嫌疑。',
+      },
+      meta: { provider: 'mtop-http-rate', observedAt: new Date().toISOString() },
     };
   }
 

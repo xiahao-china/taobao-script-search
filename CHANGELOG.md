@@ -5,6 +5,26 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-11-03
+
+### Added
+
+- `detail` now carries a `store` block (zero extra requests, from the PC detail
+  response): `sellerType` (`B` = Tmall/flagship, `C` = Taobao marketplace) with
+  `isTmall`, DSR trio (desc/serv/post scores + peer level), quality scores,
+  overall score, credit level, and shop labels (praise rate, dispatch time,
+  …). Personal resale listings without shop data report `store: null`.
+  C-shop responses hide `shopName` — the seller nickname now falls back as
+  `shopName`.
+- `detail --reviews` (CLI) / `getReviewSummary` (SDK): one request to
+  `mtop.taobao.rate.detaillist.get` v4.0 returning `total` (platform-capped),
+  `totalFuzzy` (e.g. `"2000+"`), `foldedDefault` (folded default-praise count)
+  and `foldedRatio`. Summary fields arrive as strings and are coerced;
+  unparsable values stay `null`. The platform hides neutral/bad counts
+  (`hideBadCount`), so no per-grade breakdown exists.
+- `meta.coverage.store` flags whether store data was present; unit tests for
+  the store record mapping (B/C shops, missing sources).
+
 ## [0.4.0] - 2026-11-03
 
 ### Added

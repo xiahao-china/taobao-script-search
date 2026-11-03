@@ -8,7 +8,9 @@ import { MtopAdapter } from './adapters/taobao/mtop.js';
 const help = `淘宝查询：纯 HTTP MTOP 直连（零浏览器依赖，即用即调）
   taobao search <关键词> [--limit 20] [--page 1] [--sort default]
   taobao specs <商品ID>
-  taobao detail <商品ID> --spec-id <规格ID> | --spec '{...}' | --labels '[...]' | --default
+  taobao detail <商品ID> --spec-id <规格ID> | --spec '{...}' | --labels '[...]' | --default [--reviews]
+      --reviews 附带评价计数（totalFuzzy 模糊总数 / foldedDefault 默认好评数，多 1 次请求）；
+      输出 store 块含店铺类型（isTmall）/DSR 三项分/质量分/店铺标签，零额外请求。
   taobao batch --file <批量清单.json> [--output 结果.json]
       清单格式：{"searches":[{"keyword":"...","options":{"limit":5}}],
                 "products":[{"itemId":"...","specs":[{"labels":["..."]}|null]}]}
@@ -92,7 +94,12 @@ async function mtopCommand(operation, positionals, values, control) {
       : values.spec ? JSON.parse(values.spec)
       : values.labels ? { labels: JSON.parse(values.labels) }
       : { kind: 'default' };
-    return envelope('detail', await adapter.getDetail(positionals[1], spec, queryOptions, control.signal));
+    let result = await adapter.getDetail(positionals[1], spec, queryOptions, control.signal);
+    if (values.reviews) {
+      const summary = await adapter.getReviewSummary(positionals[1], control.signal);
+      result = { ...result, data: { ...result.data, reviewSummary: summary.data }, meta: { ...result.meta, rateProvider: summary.meta.provider } };
+    }
+    return envelope('detail', result);
   }
   if (!values.file) throw new TaobaoError('INVALID_ARGUMENT', 'batch 必须指定 --file。');
   const input = JSON.parse(await readFile(resolve(values.file), 'utf8'));
@@ -106,6 +113,7 @@ export async function main() {
       help: { type: 'boolean', short: 'h' }, limit: { type: 'string' }, page: { type: 'string' }, sort: { type: 'string' },
       pages: { type: 'string' }, tab: { type: 'string' },
       'spec-id': { type: 'string' }, spec: { type: 'string' }, labels: { type: 'string' }, default: { type: 'boolean' },
+      reviews: { type: 'boolean' },
       file: { type: 'string' }, output: { type: 'string' },
       'cookie-string': { type: 'string' }, stdin: { type: 'boolean' },
       'runtime-dir': { type: 'string' }, timeout: { type: 'string' },

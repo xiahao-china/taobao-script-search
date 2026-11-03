@@ -3,7 +3,7 @@ import { test, after } from 'node:test';
 import { readFile, rm, mkdtemp, writeFile, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { buildMtopSpecs, recordPrice } from '../src/adapters/taobao/mtop.js';
+import { buildMtopSpecs, recordPrice, buildStoreRecord } from '../src/adapters/taobao/mtop.js';
 import { resolveSpec, skuPrice } from '../src/adapters/taobao/specs.js';
 import { extractOrders, assertOrdersPayload } from '../src/adapters/taobao/orders.js';
 import { mergeSetCookies, mergeCookieString, cookieHeader, cookieSummary, loadCookies, saveCookies, rootCookiePath } from '../src/core/cookie-store.js';
@@ -171,4 +171,45 @@ test('orders: 组件流解析出订单、金额剥离与分页', () => {
 
 test('orders: 空响应抛 NO_RESULTS', () => {
   assert.throws(() => assertOrdersPayload({ data: { meta: {}, group: [] } }), /NO_RESULTS|订单接口未返回/);
+});
+
+// ── 6. 店铺信誉块：pcdetail seller + storeCardVO（按真实响应结构合成）
+test('store: DSR/质量分/标签/天猫标识映射，缺源返回 null', () => {
+  const seller = {
+    sellerType: 'B', sellerNick: '楚卫旗舰店', shopName: '楚卫旗舰店',
+    evaluates: [
+      { level: '1', levelText: '高', score: '4.9 ', title: '宝贝描述', type: 'desc' },
+      { level: '1', levelText: '高', score: '4.9 ', title: '卖家服务', type: 'serv' },
+      { level: '1', levelText: '高', score: '4.9 ', title: '物流服务', type: 'post' },
+    ],
+  };
+  const storeCard = {
+    sellerType: 'B', overallScore: '5.0', creditLevel: '16',
+    evaluates: [{ score: '5.0', title: '宝贝质量' }, { score: '4.9', title: '物流速度' }, { score: '4.9', title: '服务保障' }],
+    labelList: [{ contentDesc: '88VIP好评率98%' }, { contentDesc: '平均10小时发货' }, { contentDesc: '' }, null],
+  };
+  const record = buildStoreRecord(seller, storeCard);
+  assert.equal(record.sellerType, 'B');
+  assert.equal(record.isTmall, true, 'sellerType B 应判为天猫');
+  assert.equal(record.dsr.length, 3);
+  assert.equal(record.dsr[0].score, '4.9', 'DSR 分数应剥离首尾空格');
+  assert.equal(record.dsr[0].levelText, '高');
+  assert.equal(record.scores.length, 3);
+  assert.equal(record.overallScore, '5.0');
+  assert.equal(record.creditLevel, '16');
+  assert.deepEqual(record.labels, ['88VIP好评率98%', '平均10小时发货'], '空标签与 null 项应剔除');
+
+  // C 店（淘宝集市）：seller 只有 sellerNick+sellerType，storeCardVO 只剩 creditLevel
+  assert.equal(buildStoreRecord({ sellerType: 'C', evaluates: [] }, null).isTmall, false);
+  const cShop = buildStoreRecord(
+    { sellerType: 'C', sellerNick: '个人卖家', evaluates: [{ level: '0', levelText: '平', score: '0.0 ', title: '宝贝描述', type: 'desc' }] },
+    { sellerType: 'C', creditLevel: '0' },
+  );
+  assert.equal(cShop.isTmall, false);
+  assert.equal(cShop.dsr[0].levelText, '平');
+  assert.equal(cShop.scores, null);
+  assert.equal(cShop.labels, null);
+  // h5 路径两者皆无 → null（detail 输出 store:null）
+  assert.equal(buildStoreRecord(null, null), null);
+  assert.equal(buildStoreRecord({ shopName: 'x' }, { shopName: 'x' }), null, '只有店名不算店铺信誉数据');
 });

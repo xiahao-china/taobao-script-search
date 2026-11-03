@@ -22,6 +22,7 @@ cp cookie.example.json cookie.json
 node bin/taobao.js search "M3盘头螺丝" --limit 5
 node bin/taobao.js specs 786222261977
 node bin/taobao.js detail 786222261977 --labels '["M3*8（200个）"]'
+node bin/taobao.js detail 786222261977 --labels '["M3*8（200个）"]' --reviews   # 附带评价计数
 node bin/taobao.js batch --file 批量清单.json --output artifacts/quotes.json
 node bin/taobao.js orders --page 1            # 购物记录（已买到的宝贝）
 node bin/taobao.js orders --pages 3 --output orders.json
@@ -75,10 +76,16 @@ const list = await client.search('M3盘头螺丝', { limit: 5 });
 const specs = await client.getSpecs('786222261977');
 const chosen = specs.data.variants.find(value => value.label === 'M3*8（200个）');
 const detail = await client.getDetail('786222261977', { specId: chosen.specId });
+const reviews = await client.getReviewSummary('786222261977');   // 评价计数（1 次请求）
 const orders = await client.getOrders({ page: 1 });
 ```
 
 所有操作共用 `{ ok, operation, data, error, meta }` 输出封装。金额与 ID 使用字符串；列表价格为引流初筛价，**指定规格的详情（`sku2info` 按 SKU 绑定）才用于核价**。`meta` 标注观察时间、价格依据与字段覆盖；无法确认的字段保持 `null`。
+
+### 店铺信誉与评价计数
+
+- `detail` 输出自带 `store` 块（零额外请求，取自详情接口）：`sellerType`（`B`=天猫/旗舰店，`C`=淘宝集市/个人）与 `isTmall`、DSR 三项分（描述/服务/物流 + 同行水平）、质量三评分、综合分、信用等级、店铺标签（好评率/发货时效等）。个人转卖等无店铺数据时为 `store: null`。
+- `detail --reviews` 额外发 1 次请求，附 `reviewSummary`：`total`（平台封顶值，如 2000）、`totalFuzzy`（"2000+" 模糊总数）、`foldedDefault`（折叠的默认好评数）与 `foldedRatio`（占比高提示刷单嫌疑）。平台已隐藏中差评分项数据，无好评/差评数量可取。
 
 CLI 与 SDK 是同一实现（`search` / `getSpecs` / `getDetail` / `getOrders` / `batch`）。接口输出契约见 [docs/api-contract.md](docs/api-contract.md)；目录说明见 [docs/project-structure.md](docs/project-structure.md)。
 

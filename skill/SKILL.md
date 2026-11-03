@@ -1,6 +1,6 @@
 ---
 name: taobao-product-search
-description: 淘宝商品查询工具（纯 HTTP MTOP 直连）。当用户需要搜索淘宝商品、查商品规格/SKU、按规格核价（真实价格而非引流价）、批量比价或配单、查购物记录（已买到的宝贝/订单列表）时使用。触发词：淘宝搜一下、查淘宝商品、淘宝价格、SKU 核价、批量查商品、商品比价、我的订单、购物记录。返回结构化 JSON，含标题/价格/库存/店铺/SKU 树/订单明细。
+description: 淘宝商品查询工具（纯 HTTP MTOP 直连）。当用户需要搜索淘宝商品、查商品规格/SKU、按规格核价（真实价格而非引流价）、查店铺信誉（天猫标识/DSR 评分/店铺标签）、查评价数量与默认好评占比、批量比价或配单、查购物记录（已买到的宝贝/订单列表）时使用。触发词：淘宝搜一下、查淘宝商品、淘宝价格、SKU 核价、店铺评分、天猫还是淘宝、评价多少、批量查商品、商品比价、我的订单、购物记录。返回结构化 JSON，含标题/价格/库存/店铺/SKU 树/订单明细。
 agent_created: true
 ---
 
@@ -46,6 +46,15 @@ node "C:/Users/卡车猫/.workbuddy/skills/taobao-product-search/scripts/taobao.
 # 按 SKU 核价（三种指定方式二选一）
 ... detail <itemId> --spec-id <specId>
 ... detail <itemId> --labels '["规格标签"]'
+# detail 输出自带 store 块：sellerType（B=天猫 / C=淘宝集市）+ isTmall、
+# DSR 三项分（含同行水平）、质量三评分、综合分、信用等级、店铺标签
+# （好评率/发货时效等）。个人转卖等无店铺数据时 store 为 null。
+
+# 附带评价计数（多 1 次请求）
+... detail <itemId> --labels '["规格标签"]' --reviews
+# reviewSummary: total（平台封顶值）/ totalFuzzy（"2000+"）/ foldedDefault
+# （折叠的默认好评数）/ foldedRatio——占比高提示刷单嫌疑。
+# 平台已隐藏中差评分项，拿不到好评/差分明细数量，也不要向用户编造。
 
 # 批量（输入 JSON：{ "searches": [{"keyword": "...", "options": {"limit": 5}}], "products": [{"itemId": "...", "specs": [{"labels": ["..."], "qty": 10}]}] })
 ... batch --file <清单.json> [--output 结果.json]

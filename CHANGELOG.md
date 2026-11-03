@@ -5,6 +5,20 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Product reviews (`reviews` command / `getReviews` SDK method): the item
+  rate list via `mtop.taobao.rate.detaillist.get` v4.0 — per-rate id,
+  rateType (passthrough), content, purchased sku/skuId, date, masked nick,
+  credit level, elite flag, seller reply and buyer-show pic URLs. `total`
+  is a server-capped value (`totalFuzzy` carries the fuzzy magnitude);
+  category counts (good/normal/pic/append, …) come from the feed counters.
+  Pagination uses `pageNo` — verified on 2026-11-03 that `currentPage`,
+  `page` and `pageNum` are silently ignored and always return page 1;
+  `pageSize` is capped at 20. Append-reviews appear only in the counts.
+
 ## [0.4.0] - 2026-11-03
 
 ### Added

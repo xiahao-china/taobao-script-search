@@ -3,6 +3,7 @@ import { parsePrice } from '../../core/money.js';
 import { MtopClient, parseBody } from '../../core/mtop-client.js';
 import { extractCatalog, resolveSpec, publicSpecs, skuPrice } from './specs.js';
 import { assertOrdersPayload } from './orders.js';
+import { assertReviewsPayload } from './reviews.js';
 
 const ORDER_TAB_PATTERN = /^[a-z_]{2,20}$/;
 // 订单接口挂在「已买到的宝贝」页面上下文；网关要求登录请求标记（ecode=1）。
@@ -11,6 +12,7 @@ const ORDER_REQUEST = {
   referer: 'https://buyertrade.taobao.com/trade/itemlist/list_bought_items.htm',
 };
 const ORDER_API = ['mtop.taobao.order.queryboughtlistV2', '1.0'];
+const REVIEWS_API = ['mtop.taobao.rate.detaillist.get', '4.0'];
 
 const SORTS = { default: '', 'price-asc': 'price-asc', 'price-desc': 'price-desc', sales: 'sale-desc' };
 const clean = value => String(value || '').replace(/\s+/g, ' ').trim();
@@ -257,6 +259,25 @@ export class MtopAdapter {
         page: params.page, tab: params.tab, orders, pagination,
       },
       meta: { provider: 'mtop-http-orders', observedAt: new Date().toISOString() },
+    };
+  }
+
+  // 商品评价列表。pageSize 实测最大 20（服务端原样生效）；total 为封顶值
+  // （totalFuzzy 才是真实量级文案）；追评只出现在分类计数里，列表不含追评内容。
+  // 翻页参数是 pageNo（2026-11-03 实测：currentPage/page/pageNum 均无效且静默回落第 1 页）。
+  async getReviews(itemId, options = {}, signal) {
+    requireId(itemId);
+    const params = { page: 1, pageSize: 20, ...options };
+    if (!Number.isInteger(params.page) || params.page < 1 || !Number.isInteger(params.pageSize) || params.pageSize < 1 || params.pageSize > 20) {
+      throw new TaobaoError('INVALID_ARGUMENT', 'page 须为正整数，pageSize 须为 1–20（实测上限 20）。');
+    }
+    const payload = await this.client.request(REVIEWS_API[0], REVIEWS_API[1], {
+      auctionNumId: String(itemId), pageNo: params.page, pageSize: params.pageSize,
+    }, { signal });
+    const reviews = assertReviewsPayload(payload);
+    return {
+      data: { itemId, page: params.page, pageSize: params.pageSize, ...reviews },
+      meta: { provider: 'mtop-http-reviews', observedAt: new Date().toISOString() },
     };
   }
 

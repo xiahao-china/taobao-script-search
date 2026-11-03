@@ -9,7 +9,6 @@ await client.search(keyword, options, signal);
 await client.getSpecs(itemId, options, signal);
 await client.getDetail(itemId, spec, options, signal);
 await client.getOrders(options, signal);
-await client.getReviews(itemId, options, signal);
 await client.batch(batchInput, signal);
 ```
 
@@ -82,30 +81,6 @@ const result = await client.getOrders({ page: 1 }, signal);
 ```
 
 订单号取自响应组件对象键（JSON number 会丢精度），17 位保持原样。`price` 取 `priceInfo` 中第一个可剥离的数值字段（actualTotalFee → realTotal → promotion → original）。无订单数据抛 `NO_RESULTS`；登录态失效抛 `AUTH_REQUIRED`。页间隔沿用全局限速，连续翻页请在调用方自控。
-
-## getReviews(itemId, options, signal)
-
-商品评价列表，接口 `mtop.taobao.rate.detaillist.get` v4.0。可选 `page`（正整数，默认 1）与 `pageSize`（1–20，默认 20，实测上限 20）。翻页参数为 `pageNo`（2026-11-03 实测：`currentPage`/`page`/`pageNum` 写法均无效且静默回落第 1 页，不得改用）。
-
-```js
-const result = await client.getReviews('805012477549', { page: 1, pageSize: 20 }, signal);
-// result.data: { itemId, page, pageSize, total, totalFuzzy, hasNext, counts, rates }
-// total 是封顶值（如 3000），真实量级看 totalFuzzy（如 "3000+"）
-// counts: { All, Good, Normal, NotGood, Pic, Video, Append } 分类计数（接口有则出现）
-// rates[i]: {
-//   id,        // 评价 ID（字符串）
-//   rateType,  // 接口原样透传（实测见到 "1"），不做语义解读
-//   content,   // 评价正文（feedback，已去首尾空白）
-//   sku,       // 购买规格文案（skuValueStr）
-//   skuId,     // 购买的真实 SKU ID
-//   date,      // "2026年10月7日"（feedbackDate，缺失退 createTime）
-//   userNick,  // 脱敏昵称
-//   creditLevel, elite, reply,           // 信用等级 / 精华评价 / 卖家回复（可为 null）
-//   pics,      // 买家秀图片 URL（https: 补全）
-// }
-```
-
-追评只出现在 `counts.Append` 计数里，列表项不含追评内容（需追评内容时用 `hasDetail` 关联的详情接口，未接入）。`total`/`totalPage` 受服务端封顶限制，翻页超过封顶值后 `hasNext` 转为 false。无评价数据抛 `NO_RESULTS`。
 
 ## batch(input, signal)
 

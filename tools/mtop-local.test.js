@@ -6,7 +6,6 @@ import { join } from 'node:path';
 import { buildMtopSpecs, recordPrice } from '../src/adapters/taobao/mtop.js';
 import { resolveSpec, skuPrice } from '../src/adapters/taobao/specs.js';
 import { extractOrders, assertOrdersPayload } from '../src/adapters/taobao/orders.js';
-import { extractReviews, assertReviewsPayload } from '../src/adapters/taobao/reviews.js';
 import { mergeSetCookies, mergeCookieString, cookieHeader, cookieSummary, loadCookies, saveCookies, rootCookiePath } from '../src/core/cookie-store.js';
 
 // ── 1. buildMtopSpecs + resolveSpec + skuPrice 全链路（合成 catalog）
@@ -172,61 +171,4 @@ test('orders: 组件流解析出订单、金额剥离与分页', () => {
 
 test('orders: 空响应抛 NO_RESULTS', () => {
   assert.throws(() => assertOrdersPayload({ data: { meta: {}, group: [] } }), /NO_RESULTS|订单接口未返回/);
-});
-
-// ── 6. 评价解析：rate.detaillist.get v4.0（按真实响应结构合成）
-test('reviews: rateList 解析、图片补全与分类计数', () => {
-  const payload = {
-    data: {
-      total: 3000, totalFuzzy: '3000+', totalPage: 164, hasNext: true,
-      feedAllCount: 3000, feedGoodCount: 2870, feedNormalCount: 90, feedNotGoodCount: 40,
-      feedPicCount: 310, feedVideoCount: 12, feedAppendCount: 150,
-      rateList: [
-        {
-          id: '1316279414914', rateType: '1',
-          feedback: '  做工扎实，推荐 👍 ',
-          skuValueStr: 'M3*10(200个)', skuId: '5532267113129',
-          feedbackDate: '2026年10月7日', createTime: '10月7日',
-          userNick: '人**7', reduceUserNick: '人**7', creditLevel: '9', elite: '1',
-          reply: null,
-          feedPicPathList: ['//img.alicdn.com/x.jpg'],
-        },
-        {
-          id: '1316860372452', rateType: '0',
-          feedback: '还行',
-          skuValueStr: null, skuId: null,
-          feedbackDate: '2026年10月13日',
-          userNick: 't**7', reduceUserNick: 't**7', creditLevel: '3', elite: '0',
-          reply: { content: '感谢惠顾' },
-          feedPicPathList: [],
-        },
-        { feedback: '缺 id 的脏数据', rateType: '1' },
-      ],
-    },
-  };
-  const { rates, total, totalFuzzy, hasNext, counts } = extractReviews(payload);
-  assert.equal(total, 3000);
-  assert.equal(totalFuzzy, '3000+');
-  assert.equal(hasNext, true);
-  assert.deepEqual(counts, { All: 3000, Good: 2870, Normal: 90, NotGood: 40, Pic: 310, Video: 12, Append: 150 });
-  assert.equal(rates.length, 2, '脏数据应被过滤');
-  assert.equal(rates[0].id, '1316279414914');
-  assert.equal(rates[0].content, '做工扎实，推荐 👍');
-  assert.equal(rates[0].sku, 'M3*10(200个)');
-  assert.equal(rates[0].skuId, '5532267113129');
-  assert.equal(rates[0].date, '2026年10月7日');
-  assert.equal(rates[0].userNick, '人**7');
-  assert.equal(rates[0].creditLevel, 9);
-  assert.equal(rates[0].elite, true);
-  assert.equal(rates[0].reply, null);
-  assert.deepEqual(rates[0].pics, ['https://img.alicdn.com/x.jpg']);
-  assert.equal(rates[1].sku, null);
-  assert.equal(rates[1].reply, '感谢惠顾', '对象型 reply 取 content');
-  assert.equal(rates[1].elite, false);
-  const passed = assertReviewsPayload(payload);
-  assert.equal(passed.rates.length, 2);
-});
-
-test('reviews: 空响应抛 NO_RESULTS', () => {
-  assert.throws(() => assertReviewsPayload({ data: { rateList: [], total: null } }), /NO_RESULTS|评价接口未返回/);
 });

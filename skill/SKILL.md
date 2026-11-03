@@ -1,6 +1,6 @@
 ---
 name: taobao-product-search
-description: 淘宝商品查询工具（纯 HTTP MTOP 直连）。当用户需要搜索淘宝商品、查商品规格/SKU、按规格核价（真实价格而非引流价）、批量比价或配单、查购物记录（已买到的宝贝/订单列表）、查商品评价/买家秀时使用。触发词：淘宝搜一下、查淘宝商品、淘宝价格、SKU 核价、批量查商品、商品比价、我的订单、购物记录、淘宝评价、买家秀。返回结构化 JSON，含标题/价格/库存/店铺/SKU 树/订单明细/评价列表。
+description: 淘宝商品查询工具（纯 HTTP MTOP 直连）。当用户需要搜索淘宝商品、查商品规格/SKU、按规格核价（真实价格而非引流价）、批量比价或配单、查购物记录（已买到的宝贝/订单列表）时使用。触发词：淘宝搜一下、查淘宝商品、淘宝价格、SKU 核价、批量查商品、商品比价、我的订单、购物记录。返回结构化 JSON，含标题/价格/库存/店铺/SKU 树/订单明细。
 agent_created: true
 ---
 
@@ -8,7 +8,7 @@ agent_created: true
 
 ## Overview
 
-通过捆绑的 CLI（零 npm 依赖，Node >= 22）直连淘宝 MTOP H5 网关查询商品数据与购物记录。六个命令：`search`（关键词搜索）、`specs`（规格树）、`detail`（按 SKU 核价）、`batch`（批量）、`orders`（已买到的宝贝）、`reviews`（商品评价列表）。输出统一 `{ ok, operation, data, error, meta }` JSON 信封。
+通过捆绑的 CLI（零 npm 依赖，Node >= 22）直连淘宝 MTOP H5 网关查询商品数据与购物记录。五个命令：`search`（关键词搜索）、`specs`（规格树）、`detail`（按 SKU 核价）、`batch`（批量）、`orders`（已买到的宝贝）。输出统一 `{ ok, operation, data, error, meta }` JSON 信封。
 
 ## 关键约束（务必遵守）
 
@@ -53,10 +53,6 @@ node "C:/Users/卡车猫/.workbuddy/skills/taobao-product-search/scripts/taobao.
 # 购物记录（已买到的宝贝；服务端固定每页 15 条，tabCode 仅实测过 all）
 ... orders [--page 1] [--tab all] [--pages N] [--output 订单.json]
 # 返回 orders[]: orderId（全精度字符串）/shopName/status/paid/total/discount/items[{title,skuText,quantity,price,auctionId,pic}]
-
-# 商品评价（每页最多 20 条；total 是封顶值，真实量级看 totalFuzzy；追评只在 counts.Append 计数里）
-... reviews <itemId> [--page 1] [--size 20] [--pages N] [--output 评价.json]
-# 返回 rates[]: id/rateType（原样透传）/content/sku/skuId/date/userNick/creditLevel/elite/reply/pics[]，及 counts{Good,Normal,NotGood,Pic,Append,...}
 ```
 
 （上表 `...` 代表 `node "<skill路径>/scripts/taobao.mjs"`）
@@ -72,12 +68,6 @@ node "C:/Users/卡车猫/.workbuddy/skills/taobao-product-search/scripts/taobao.
 
 1. `orders --pages N --output orders.json` 拉取近 N 页（约 15×N 条，按需估算页数）
 2. 订单级字段（paid）只聚合一次；按月/按店/按金额区间统计前先按 orderId 去重
-
-### 典型工作流：评价口碑参考
-
-1. 推荐商品前可对候选商品跑 `reviews <itemId> --size 20` 抽查第一页评价
-2. 看 `counts`（好评/差评/带图/追评比例）与 `content` 常见抱怨点，辅助判断商品质量
-3. 评价列表用于口碑参考，不参与价格核验
 
 ## 资源
 

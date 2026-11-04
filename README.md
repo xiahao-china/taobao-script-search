@@ -23,7 +23,7 @@ node bin/taobao.js search "M3盘头螺丝" --limit 5
 node bin/taobao.js specs 786222261977
 node bin/taobao.js detail 786222261977 --labels '["M3*8（200个）"]'
 node bin/taobao.js detail 786222261977 --labels '["M3*8（200个）"]' --reviews   # 附带评价计数
-node bin/taobao.js batch --file 批量清单.json --output artifacts/quotes.json
+node bin/taobao.js batch --file 批量清单.json --output .runtime/artifacts/quotes.json
 node bin/taobao.js orders --page 1            # 购物记录（已买到的宝贝）
 node bin/taobao.js orders --pages 3 --output orders.json
 ```

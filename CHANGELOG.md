@@ -38,6 +38,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Runtime outputs live under `.runtime/` only: `tools/export-orders-csv.mjs`
+  now writes to `.runtime/artifacts/` (previously `artifacts/` at the repo
+  root), and the README batch example uses `.runtime/artifacts/` too. The
+  root-level `artifacts/` folder is gone (it was already gitignored; local
+  CSVs were migrated).
 - Risk-control responses (`RGV587`) are now reported as a dedicated
   `RISK_CONTROL` error instead of being lumped into `AUTH_REQUIRED` — the two
   have different causes (request fingerprint/rate vs. login state) and

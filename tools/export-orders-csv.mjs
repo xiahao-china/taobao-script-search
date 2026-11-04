@@ -9,7 +9,7 @@ import { MtopClient, parseBody } from '../src/core/mtop-client.js';
 import { normalizeUrl } from '../src/core/url.js';
 
 const CUTOFF = Date.parse('2026-06-30T00:00:00+08:00'); // 含 6月30日当天
-const CSV_PATH = 'artifacts/taobao-orders-since-2026-06-30.csv';
+const CSV_PATH = '.runtime/artifacts/taobao-orders-since-2026-06-30.csv';
 const PROGRESS_PATH = '.runtime/orders-export-progress.json';
 
 const REFERER = 'https://buyertrade.taobao.com/trade/itemlist/list_bought_items.htm';
@@ -116,7 +116,7 @@ async function main() {
     });
     if (!order.items.length) lines.push([...orderCells, '', '', '', '', '', '', '', ''].map(csvCell).join(','));
   }
-  await mkdir('artifacts', { recursive: true });
+  await mkdir('.runtime/artifacts', { recursive: true });
   await writeFile(CSV_PATH, lines.join('\r\n') + '\r\n');
 
   const totalItems = inRange.reduce((sum, order) => sum + order.items.length, 0);

@@ -30,7 +30,9 @@ cookie.json 只读不被程序改写；签名令牌自动续签，登录态失�
 自动重试——等待几分钟并在浏览器正常访问一次 taobao.com 后再试；batch 中触发会立即终
 止剩余条目，避免带坏状态继续撞接口）。
 请求日志：.runtime/log/mtop-request-log.jsonl 每行记录一次真实请求（时间/接口/结果/等待与
-耗时），被风控或异常时用它复盘查询节奏；超 5MB 轮转为同文件夹 .old，可随时整文件删除。`;
+耗时），被风控或异常时用它复盘查询节奏；操作日志：.runtime/log/mtop-operation-log.jsonl
+每行记录一次业务查询（时间/查询类型 search·specs·detail·orders/入参/完整结果内容或错误），
+查「当时搜了什么、搜到了什么」用它。两份日志均超 5MB 轮转为同文件夹 .old，可随时整文件删除。`;
 
 function envelope(operation, payload) {
   return { ok: true, operation, data: payload.data, error: null, meta: payload.meta };

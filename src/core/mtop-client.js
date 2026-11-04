@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { readFile, writeFile, rename, rm, mkdir, appendFile, stat } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { dirname, join, basename } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { TaobaoError, checkAbort } from './errors.js';
 import { runtimePaths } from './config.js';
@@ -33,23 +33,45 @@ function requestLogPath(runtimeDir) {
 
 const LEGACY_LOG_PATH = runtimeDir => join(runtimePaths(runtimeDir || undefined).directory, 'mtop-request-log.jsonl');
 
-// 单文件 5MB 上限：超过后整体挪到同文件夹 .old（风控复盘看最近行为，老日志留档一份即可）。
-const REQUEST_LOG_MAX_BYTES = 5 * 1024 * 1024;
+// 单文件 5MB 上限：超过后整体挪到同文件夹 .old（复盘看最近行为，老日志留档一份即可）。
+const LOG_MAX_BYTES = 5 * 1024 * 1024;
+
+// JSONL 追加的公共件：建目录 + 超限轮转（<名>.old.jsonl）+ 追加一行。
+// 并发进程同时轮转的 rename 竞争由 catch 兜底（最坏情况多留一份，不丢已写入行）。
+async function appendJsonl(path, entry) {
+  await mkdir(dirname(path), { recursive: true });
+  try {
+    const info = await stat(path);
+    if (info.size > LOG_MAX_BYTES) {
+      await rename(path, join(dirname(path), `${basename(path, '.jsonl')}.old.jsonl`)).catch(() => {});
+    }
+  } catch { /* 首次写入前无文件，非错误 */ }
+  await appendFile(path, JSON.stringify(entry) + '\n');
+}
 
 // 请求日志（JSONL，每行一次真实 HTTP 尝试）：时间戳、接口、结果、限速等待、耗时。
 // 用途：被风控/异常时回溯「当时查了什么、什么节奏」。是旁路功能——任何写日志
-// 失败都不影响主链路；并发进程同时轮转的 rename 竞争由 catch 兜底。
+// 失败都不影响主链路。
 export async function appendRequestLog(runtimeDir, entry) {
   try {
     const path = requestLogPath(runtimeDir);
-    await mkdir(dirname(path), { recursive: true });
     // 一次性迁移：旧版日志直接躺在 .runtime 根下，见到就搬进 log/ 文件夹。
-    try { await rename(LEGACY_LOG_PATH(runtimeDir), path); } catch { /* 无旧文件，正常 */ }
+    // 注意先建目录——rename 的目标父目录不存在时整个迁移会静默失败。
     try {
-      const info = await stat(path);
-      if (info.size > REQUEST_LOG_MAX_BYTES) await rename(path, join(dirname(path), 'mtop-request-log.old.jsonl')).catch(() => {});
-    } catch { /* 首次写入前无文件，非错误 */ }
-    await appendFile(path, JSON.stringify(entry) + '\n');
+      await mkdir(dirname(path), { recursive: true });
+      await rename(LEGACY_LOG_PATH(runtimeDir), path);
+    } catch { /* 无旧文件，正常 */ }
+    await appendJsonl(path, entry);
+  } catch { /* 旁路，吞掉 */ }
+}
+
+// 操作日志（JSONL，每行一次业务查询）：查询类型（search/specs/detail/orders/
+// review-summary/batch）、入参、完整业务结果（商品列表/详情/规格树）或错误。
+// 与请求日志互补：请求日志管协议层节奏，操作日志管「查了什么、查到了什么」。
+// 同样是旁路功能，写失败静默。
+export async function appendOperationLog(runtimeDir, entry) {
+  try {
+    await appendJsonl(join(runtimePaths(runtimeDir || undefined).directory, 'log', 'mtop-operation-log.jsonl'), entry);
   } catch { /* 旁路，吞掉 */ }
 }
 

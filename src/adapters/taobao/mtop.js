@@ -1,6 +1,6 @@
 import { TaobaoError, requireId } from '../../core/errors.js';
 import { parsePrice } from '../../core/money.js';
-import { MtopClient, parseBody } from '../../core/mtop-client.js';
+import { MtopClient, parseBody, appendOperationLog } from '../../core/mtop-client.js';
 import { normalizeUrl } from '../../core/url.js';
 import { extractCatalog, resolveSpec, publicSpecs, skuPrice } from './specs.js';
 import { assertOrdersPayload } from './orders.js';
@@ -155,6 +155,26 @@ export class MtopAdapter {
     this.client = options.client || new MtopClient(options);
   }
 
+  // 操作日志包装器：每次业务查询落一行（查询类型/入参/完整业务结果或错误），
+  // 与 mtop-client 的 HTTP 请求日志互补。日志是旁路，写失败不影响查询本身。
+  async withLog(operation, params, fn) {
+    const start = Date.now();
+    const base = { t: start, ts: new Date(start).toISOString(), operation, params };
+    try {
+      const result = await fn();
+      await appendOperationLog(this.options.runtimeDir, {
+        ...base, ok: true, ms: Date.now() - start, data: result?.data ?? null,
+      });
+      return result;
+    } catch (error) {
+      await appendOperationLog(this.options.runtimeDir, {
+        ...base, ok: false, ms: Date.now() - start,
+        error: { code: error.code || 'MTOP_ERROR', message: error.message },
+      });
+      throw error;
+    }
+  }
+
   async search(keyword, options = {}, signal) {
     if (typeof keyword !== 'string' || !keyword.trim()) throw new TaobaoError('INVALID_ARGUMENT', '关键词不能为空。');
     keyword = keyword.trim();
@@ -162,20 +182,22 @@ export class MtopAdapter {
     if (!Number.isInteger(params.page) || params.page < 1 || !Number.isInteger(params.limit) || params.limit < 1 || params.limit > 48 || !(params.sort in SORTS)) {
       throw new TaobaoError('INVALID_ARGUMENT', 'page 须为正整数，limit 为 1–48，sort 为 default/price-asc/price-desc/sales。');
     }
-    const data = await this.client.request('mtop.taobao.wsearch.appsearch', '1.0', {
-      q: keyword, search_action: 'initiative', page: String(params.page),
-      n: String(params.limit), sversion: '9.9.9', ...(SORTS[params.sort] ? { sort: SORTS[params.sort] } : {}),
-    }, { signal });
-    const items = collectRows(data).map(mapItem).filter(Boolean).slice(0, params.limit);
-    if (!items.length) throw new TaobaoError('NO_RESULTS', '搜索接口未返回商品数据；可能是关键词无结果或返回结构变化。');
-    return {
-      data: {
-        keyword, page: params.page, sort: params.sort,
-        items: items.map(item => ({ ...item, priceSummary: { ...(parsePrice([item.priceText]) || { amount: null, display: item.priceText }), scope: 'item-summary' } })),
-        total: null,
-      },
-      meta: { provider: 'mtop-http', observedAt: new Date().toISOString() },
-    };
+    return this.withLog('search', { keyword, ...params }, async () => {
+      const data = await this.client.request('mtop.taobao.wsearch.appsearch', '1.0', {
+        q: keyword, search_action: 'initiative', page: String(params.page),
+        n: String(params.limit), sversion: '9.9.9', ...(SORTS[params.sort] ? { sort: SORTS[params.sort] } : {}),
+      }, { signal });
+      const items = collectRows(data).map(mapItem).filter(Boolean).slice(0, params.limit);
+      if (!items.length) throw new TaobaoError('NO_RESULTS', '搜索接口未返回商品数据；可能是关键词无结果或返回结构变化。');
+      return {
+        data: {
+          keyword, page: params.page, sort: params.sort,
+          items: items.map(item => ({ ...item, priceSummary: { ...(parsePrice([item.priceText]) || { amount: null, display: item.priceText }), scope: 'item-summary' } })),
+          total: null,
+        },
+        meta: { provider: 'mtop-http', observedAt: new Date().toISOString() },
+      };
+    });
   }
 
   // 详情接口双保险：H5 getdetail 优先，拿不到 skuBase/skuCore 时退回 PC 接口。
@@ -243,9 +265,11 @@ export class MtopAdapter {
 
   async getSpecs(itemId, options = {}, signal) {
     requireId(itemId);
-    const catalog = await this.fetchCatalog(itemId, signal);
-    const specs = buildMtopSpecs(itemId, catalog);
-    return { data: publicSpecs(specs), meta: { provider: 'mtop-http', observedAt: new Date().toISOString() } };
+    return this.withLog('specs', { itemId }, async () => {
+      const catalog = await this.fetchCatalog(itemId, signal);
+      const specs = buildMtopSpecs(itemId, catalog);
+      return { data: publicSpecs(specs), meta: { provider: 'mtop-http', observedAt: new Date().toISOString() } };
+    });
   }
 
   // 从已拉取的 catalog 解析单规格详情；batch 用它复用同商品的 catalog，避免重复请求。
@@ -287,8 +311,10 @@ export class MtopAdapter {
 
   async getDetail(itemId, spec, options = {}, signal) {
     requireId(itemId);
-    const catalog = await this.fetchCatalog(itemId, signal);
-    return this.detailFromCatalog(catalog, itemId, spec);
+    return this.withLog('detail', { itemId, spec: spec ?? null }, async () => {
+      const catalog = await this.fetchCatalog(itemId, signal);
+      return this.detailFromCatalog(catalog, itemId, spec);
+    });
   }
 
   // 购物记录（已买到的宝贝）。服务端固定每页 15 条；page 为正整数，
@@ -301,16 +327,18 @@ export class MtopAdapter {
     if (!ORDER_TAB_PATTERN.test(params.tab)) {
       throw new TaobaoError('INVALID_ARGUMENT', 'tab 须为 2–20 位小写字母/下划线（已验证的值：all；其他页签码未经实测）。');
     }
-    const payload = await this.client.request(ORDER_API[0], ORDER_API[1], {
-      spm: 'a2141.7756461.2.6', page: params.page, tabCode: params.tab, appVersion: '1.0', appName: 'tborder',
-    }, { signal, ...ORDER_REQUEST });
-    const { orders, pagination } = assertOrdersPayload(payload);
-    return {
-      data: {
-        page: params.page, tab: params.tab, orders, pagination,
-      },
-      meta: { provider: 'mtop-http-orders', observedAt: new Date().toISOString() },
-    };
+    return this.withLog('orders', { page: params.page, tab: params.tab }, async () => {
+      const payload = await this.client.request(ORDER_API[0], ORDER_API[1], {
+        spm: 'a2141.7756461.2.6', page: params.page, tabCode: params.tab, appVersion: '1.0', appName: 'tborder',
+      }, { signal, ...ORDER_REQUEST });
+      const { orders, pagination } = assertOrdersPayload(payload);
+      return {
+        data: {
+          page: params.page, tab: params.tab, orders, pagination,
+        },
+        meta: { provider: 'mtop-http-orders', observedAt: new Date().toISOString() },
+      };
+    });
   }
 
   // 评价计数（1 次请求，rateList 内容丢弃）。total 是平台封顶值（2000/1000 等），
@@ -318,79 +346,86 @@ export class MtopAdapter {
   // 占比高提示刷单嫌疑。平台已隐藏差评数（hideBadCount），无中差评分项可取。
   async getReviewSummary(itemId, signal) {
     requireId(itemId);
-    const payload = await this.client.request(RATE_API[0], RATE_API[1], {
-      auctionNumId: itemId, currentPage: '1', pageSize: '10', orderType: '',
-    }, { signal, referer: `https://item.taobao.com/item.htm?id=${itemId}` });
-    // 汇总字段实测为字符串（"2000"/"1629"），统一转数字；解析不了保持 null。
-    const toCount = value => {
-      const num = Number(value);
-      return Number.isFinite(num) && String(value).trim() !== '' ? num : null;
-    };
-    const total = toCount(payload?.total);
-    const folded = toCount(payload?.foldCount);
-    const fuzzy = [payload?.totalFuzzy, payload?.fuzzyRateCount].find(value => typeof value === 'string' && value) || null;
-    return {
-      data: {
-        itemId,
-        total,
-        totalFuzzy: fuzzy,
-        foldedDefault: folded,
-        foldedRatio: total && folded !== null ? `${Math.round((folded / total) * 100)}%` : null,
-        note: 'total 为平台封顶值，真实数量级见 totalFuzzy；foldedDefault 为折叠的默认好评数，占比高提示刷单嫌疑。',
-      },
-      meta: { provider: 'mtop-http-rate', observedAt: new Date().toISOString() },
-    };
+    return this.withLog('review-summary', { itemId }, async () => {
+      const payload = await this.client.request(RATE_API[0], RATE_API[1], {
+        auctionNumId: itemId, currentPage: '1', pageSize: '10', orderType: '',
+      }, { signal, referer: `https://item.taobao.com/item.htm?id=${itemId}` });
+      // 汇总字段实测为字符串（"2000"/"1629"），统一转数字；解析不了保持 null。
+      const toCount = value => {
+        const num = Number(value);
+        return Number.isFinite(num) && String(value).trim() !== '' ? num : null;
+      };
+      const total = toCount(payload?.total);
+      const folded = toCount(payload?.foldCount);
+      const fuzzy = [payload?.totalFuzzy, payload?.fuzzyRateCount].find(value => typeof value === 'string' && value) || null;
+      return {
+        data: {
+          itemId,
+          total,
+          totalFuzzy: fuzzy,
+          foldedDefault: folded,
+          foldedRatio: total && folded !== null ? `${Math.round((folded / total) * 100)}%` : null,
+          note: 'total 为平台封顶值，真实数量级见 totalFuzzy；foldedDefault 为折叠的默认好评数，占比高提示刷单嫌疑。',
+        },
+        meta: { provider: 'mtop-http-rate', observedAt: new Date().toISOString() },
+      };
+    });
   }
 
   // 批量执行：单项失败不影响其余项；但登录态失效（AUTH_REQUIRED）或风控拦截
   // （RISK_CONTROL）会立即终止整批——那两种状态下继续请求只会逐项重复失败
   // 并持续累积坏指纹（登录态体检：不带坏状态去撞接口）。
   async batch(input, signal) {
-    const results = [];
-    const isFatal = error => error.code === 'AUTH_REQUIRED' || error.code === 'RISK_CONTROL';
-    let aborted = null;
-    const noteFatal = error => {
-      if (isFatal(error) && !aborted) aborted = { code: error.code, message: error.message };
-    };
-    for (const entry of input.searches || []) {
-      if (aborted) break;
-      const { keyword, options } = typeof entry === 'string' ? { keyword: entry, options: {} } : entry;
-      try { results.push({ kind: 'search', keyword, result: await this.search(keyword, options, signal) }); }
-      catch (error) { results.push({ kind: 'search', keyword, error: { code: error.code || 'MTOP_ERROR', message: error.message } }); noteFatal(error); }
-    }
-    for (const product of input.products || []) {
-      if (aborted) break;
-      const specs = Array.isArray(product.specs) && product.specs.length ? product.specs : [null];
-      // 同商品只拉一次 catalog，多规格在内存里复用——否则 N 个规格 = N 次详情请求。
-      let catalog = null;
-      try {
-        requireId(product.itemId);
-        catalog = await this.fetchCatalog(product.itemId, signal);
-      } catch (error) {
-        for (const spec of specs) results.push({ kind: spec ? 'detail' : 'specs', itemId: product.itemId, error: { code: error.code || 'MTOP_ERROR', message: error.message } });
-        noteFatal(error);
-        continue;
+    return this.withLog('batch', {
+      searches: (input.searches || []).length,
+      products: (input.products || []).length,
+    }, async () => {
+      const results = [];
+      const isFatal = error => error.code === 'AUTH_REQUIRED' || error.code === 'RISK_CONTROL';
+      let aborted = null;
+      const noteFatal = error => {
+        if (isFatal(error) && !aborted) aborted = { code: error.code, message: error.message };
+      };
+      for (const entry of input.searches || []) {
+        if (aborted) break;
+        const { keyword, options } = typeof entry === 'string' ? { keyword: entry, options: {} } : entry;
+        try { results.push({ kind: 'search', keyword, result: await this.search(keyword, options, signal) }); }
+        catch (error) { results.push({ kind: 'search', keyword, error: { code: error.code || 'MTOP_ERROR', message: error.message } }); noteFatal(error); }
       }
-      for (const spec of specs) {
+      for (const product of input.products || []) {
+        if (aborted) break;
+        const specs = Array.isArray(product.specs) && product.specs.length ? product.specs : [null];
+        // 同商品只拉一次 catalog，多规格在内存里复用——否则 N 个规格 = N 次详情请求。
+        let catalog = null;
         try {
-          const result = spec ? this.detailFromCatalog(catalog, product.itemId, spec) : { data: publicSpecs(buildMtopSpecs(product.itemId, catalog)), meta: { provider: 'mtop-http', observedAt: new Date().toISOString() } };
-          results.push({ kind: spec ? 'detail' : 'specs', itemId: product.itemId, result });
+          requireId(product.itemId);
+          catalog = await this.fetchCatalog(product.itemId, signal);
         } catch (error) {
-          results.push({ kind: spec ? 'detail' : 'specs', itemId: product.itemId, error: { code: error.code || 'MTOP_ERROR', message: error.message } });
-          if (isFatal(error)) { noteFatal(error); break; }
+          for (const spec of specs) results.push({ kind: spec ? 'detail' : 'specs', itemId: product.itemId, error: { code: error.code || 'MTOP_ERROR', message: error.message } });
+          noteFatal(error);
+          continue;
+        }
+        for (const spec of specs) {
+          try {
+            const result = spec ? this.detailFromCatalog(catalog, product.itemId, spec) : { data: publicSpecs(buildMtopSpecs(product.itemId, catalog)), meta: { provider: 'mtop-http', observedAt: new Date().toISOString() } };
+            results.push({ kind: spec ? 'detail' : 'specs', itemId: product.itemId, result });
+          } catch (error) {
+            results.push({ kind: spec ? 'detail' : 'specs', itemId: product.itemId, error: { code: error.code || 'MTOP_ERROR', message: error.message } });
+            if (isFatal(error)) { noteFatal(error); break; }
+          }
         }
       }
-    }
-    const failed = results.filter(item => item.error).length;
-    return {
-      data: {
-        results, total: results.length, succeeded: results.length - failed, failed,
-        ...(aborted ? {
-          aborted,
-          note: `批量在第 ${results.length} 项后提前终止（${aborted.code}）：登录态失效或风控拦截时继续执行只会逐项重复失败，剩余条目未执行。处理后重跑即可。`,
-        } : {}),
-      },
-      meta: { provider: 'mtop-http', observedAt: new Date().toISOString() },
-    };
+      const failed = results.filter(item => item.error).length;
+      return {
+        data: {
+          results, total: results.length, succeeded: results.length - failed, failed,
+          ...(aborted ? {
+            aborted,
+            note: `批量在第 ${results.length} 项后提前终止（${aborted.code}）：登录态失效或风控拦截时继续执行只会逐项重复失败，剩余条目未执行。处理后重跑即可。`,
+          } : {}),
+        },
+        meta: { provider: 'mtop-http', observedAt: new Date().toISOString() },
+      };
+    });
   }
 }

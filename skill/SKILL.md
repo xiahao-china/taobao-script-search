@@ -18,6 +18,7 @@ agent_created: true
 - **订单号是字符串**：17 位订单号超 JS number 精度，解析一律用对象键；输出保持字符串。
 - **失败处理**：`AUTH_REQUIRED` = Cookie 过期/未配置，提示用户从浏览器重新复制并更新 cookie 文件；`RISK_CONTROL` = 风控拦截（RGV587，请求指纹/频率问题，与登录态无关），**刻意不自动重试**（重试加重封禁）——等待几分钟、在浏览器正常访问一次 taobao.com 后再试；`ITEM_UNAVAILABLE` = 商品下架。batch 命中 AUTH/RISK 会立即终止剩余条目（`data.aborted`），处理后重跑。
 - **请求日志**：`.runtime/log/mtop-request-log.jsonl` 每行一次真实请求（时间戳/接口/结果/限速等待 waitMs/耗时 ms），查节奏、复盘风控触发点用它；超 5MB 自动轮转同文件夹 `.old`，可整文件删除不影响功能。
+- **操作日志**：`.runtime/log/mtop-operation-log.jsonl` 每行一次业务查询（时间戳/查询类型 search·specs·detail·orders·review-summary·batch/入参/完整业务结果或错误码）。想回溯「当时搜了什么关键词、返回了哪些商品、详情价格多少」看这份；两份日志同文件夹同轮转规则。
 
 ## 调用方式
 

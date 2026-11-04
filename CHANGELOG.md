@@ -17,6 +17,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   flags). Purpose: reconstruct query cadence when investigating risk-control
   or failures. Auto-rotates to `.old` past 5 MB; write failures are silently
   ignored (bypass only).
+- Per-operation JSONL log at `.runtime/log/mtop-operation-log.jsonl`: one
+  line per business query (search/specs/detail/orders/review-summary/batch)
+  with timestamp, operation type, params (keyword/page/itemId/spec), ok,
+  duration, and the FULL business result (`data`: item list with
+  title/price/shop/url, detail with price and store block, spec tree) or the
+  error `{ code, message }`. Complements the request log — request log covers
+  protocol-level cadence, operation log answers "what was queried and what
+  came back". Same folder/rotation/bypass rules.
 - Session warm-up (once per process): when `cna` (device-fingerprint cookie) is
   missing, one homepage visit fetches it; when the sign token is missing, a
   zero-cost dummy request (`mtop.common.getTimestamp`) exchanges it from the

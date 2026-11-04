@@ -120,3 +120,5 @@ const result = await client.getOrders({ page: 1 }, signal);
 会话预热：进程内首次请求前，若缺 `cna`（设备指纹 Cookie）会先访问一次 taobao.com 主页领取；若缺签名令牌会先用零成本哑请求（`mtop.common.getTimestamp`）向网关换取 `_m_h5_tk`。均为尽力而为，失败走原有令牌重签链路兜底。
 
 请求日志：每次真实 HTTP 尝试（含令牌重签重试与各类失败）追加一行 JSONL 到 `.runtime/log/mtop-request-log.jsonl`（日志统一归 `log/` 子文件夹，旧位置文件首次写入时自动迁移），字段：`t`/`ts`（发起时刻）、`api`/`v`、`ok`、失败时的 `code`（及 `ret`）、`http` 状态码、`waitMs`（为满足限速实际等待）、`ms`（请求耗时）、可选 `probe`/`retry` 标记。超 5MB 自动轮转为同文件夹 `.old`；写日志失败静默忽略，绝不影响主链路。
+
+操作日志：每次业务查询（adapter 层 search/specs/detail/orders/review-summary/batch，含 batch 内每个子查询）追加一行 JSONL 到 `.runtime/log/mtop-operation-log.jsonl`，字段：`t`/`ts`（查询时刻）、`operation`（查询类型）、`params`（入参：关键词/页码/itemId/规格等）、`ok`、`ms`（查询耗时）、成功时的 `data`（完整业务结果：商品列表含标题/价格/店铺/链接，详情含价格与店铺信誉块，规格树等）、失败时的 `error: { code, message }`。与请求日志互补——请求日志管协议层节奏，操作日志管「查了什么、查到了什么」。同样归 `log/` 文件夹、5MB 轮转、写失败静默。

@@ -340,3 +340,48 @@ test('request log: 归档到 log/ 文件夹，旧位置文件自动迁移', asyn
   assert.equal(second.waitMs, 6120, '限速等待时长必须落档，否则无法复盘节奏');
   assert.ok(second.t > first.t, '两次请求的时间戳可推导真实间隔');
 });
+
+// ── 9. 操作日志：每次业务查询一行，含查询类型/入参/完整业务结果或错误
+import { appendOperationLog } from '../src/core/mtop-client.js';
+
+test('operation log: 记录查询类型、入参与完整业务结果（商品列表）', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'tb-oplog-'));
+  tempDirs.push(base);
+  const dir = join(base, '.runtime');
+  const adapter = new MtopAdapter({
+    client: stubClient([
+      { itemsArray: [{ id: '987654321', title: '墨水屏模块', price: { priceText: '43.00' }, shopName: '大菠萝电子', view_sales: '1000+' }] },
+      { data: {} }, // 空结果 → NO_RESULTS，验证失败同样落档
+    ]),
+    runtimeDir: dir,
+  });
+  await adapter.search('墨水屏', { limit: 5 });
+  await assert.rejects(adapter.search('查无此物'), error => error.code === 'NO_RESULTS');
+  const lines = (await readFile(join(dir, 'log', 'mtop-operation-log.jsonl'), 'utf8')).trim().split('\n');
+  assert.equal(lines.length, 2, '成功与失败各落一行');
+  const first = JSON.parse(lines[0]);
+  assert.equal(first.operation, 'search');
+  assert.equal(first.ok, true);
+  assert.equal(first.params.keyword, '墨水屏');
+  assert.equal(first.params.limit, 5, '入参（含默认值合并后的）要落档');
+  assert.equal(first.data.items[0].itemId, '987654321');
+  assert.equal(first.data.items[0].title, '墨水屏模块');
+  assert.equal(first.data.items[0].shopName, '大菠萝电子');
+  assert.equal(first.data.items[0].priceSummary.display, '43.00', '结果内容详情（含价格）要在日志里');
+  assert.equal(typeof first.ms, 'number', '耗时落档');
+  const second = JSON.parse(lines[1]);
+  assert.equal(second.operation, 'search');
+  assert.equal(second.ok, false);
+  assert.equal(second.error.code, 'NO_RESULTS');
+  assert.ok(second.t >= first.t, '时间戳可推导查询顺序与间隔');
+});
+
+test('operation log: appendOperationLog 直写路径为 log/ 文件夹', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'tb-oplog2-'));
+  tempDirs.push(base);
+  const dir = join(base, '.runtime');
+  await appendOperationLog(dir, { t: 1, operation: 'detail', params: { itemId: '123' }, ok: true, data: { title: 'x' } });
+  const line = JSON.parse(await readFile(join(dir, 'log', 'mtop-operation-log.jsonl'), 'utf8'));
+  assert.equal(line.operation, 'detail');
+  assert.deepEqual(line.params, { itemId: '123' });
+});

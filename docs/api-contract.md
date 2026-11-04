@@ -119,4 +119,4 @@ const result = await client.getOrders({ page: 1 }, signal);
 
 会话预热：进程内首次请求前，若缺 `cna`（设备指纹 Cookie）会先访问一次 taobao.com 主页领取；若缺签名令牌会先用零成本哑请求（`mtop.common.getTimestamp`）向网关换取 `_m_h5_tk`。均为尽力而为，失败走原有令牌重签链路兜底。
 
-请求日志：每次真实 HTTP 尝试（含令牌重签重试与各类失败）追加一行 JSONL 到 `.runtime/mtop-request-log.jsonl`，字段：`t`/`ts`（发起时刻）、`api`/`v`、`ok`、失败时的 `code`（及 `ret`）、`http` 状态码、`waitMs`（为满足限速实际等待）、`ms`（请求耗时）、可选 `probe`/`retry` 标记。超 5MB 自动轮转为 `.old`；写日志失败静默忽略，绝不影响主链路。
+请求日志：每次真实 HTTP 尝试（含令牌重签重试与各类失败）追加一行 JSONL 到 `.runtime/log/mtop-request-log.jsonl`（日志统一归 `log/` 子文件夹，旧位置文件首次写入时自动迁移），字段：`t`/`ts`（发起时刻）、`api`/`v`、`ok`、失败时的 `code`（及 `ret`）、`http` 状态码、`waitMs`（为满足限速实际等待）、`ms`（请求耗时）、可选 `probe`/`retry` 标记。超 5MB 自动轮转为同文件夹 `.old`；写日志失败静默忽略，绝不影响主链路。

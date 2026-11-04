@@ -27,10 +27,13 @@ function pacingPath(runtimeDir) {
 }
 
 function requestLogPath(runtimeDir) {
-  return join(runtimePaths(runtimeDir || undefined).directory, 'mtop-request-log.jsonl');
+  // 日志统一归 .runtime/log/ 文件夹（与限速占坑等状态文件分开），轮转件也在其中。
+  return join(runtimePaths(runtimeDir || undefined).directory, 'log', 'mtop-request-log.jsonl');
 }
 
-// 单文件 5MB 上限：超过后整体挪到 .old（风控复盘看最近行为，老日志留档一份即可）。
+const LEGACY_LOG_PATH = runtimeDir => join(runtimePaths(runtimeDir || undefined).directory, 'mtop-request-log.jsonl');
+
+// 单文件 5MB 上限：超过后整体挪到同文件夹 .old（风控复盘看最近行为，老日志留档一份即可）。
 const REQUEST_LOG_MAX_BYTES = 5 * 1024 * 1024;
 
 // 请求日志（JSONL，每行一次真实 HTTP 尝试）：时间戳、接口、结果、限速等待、耗时。
@@ -40,9 +43,11 @@ export async function appendRequestLog(runtimeDir, entry) {
   try {
     const path = requestLogPath(runtimeDir);
     await mkdir(dirname(path), { recursive: true });
+    // 一次性迁移：旧版日志直接躺在 .runtime 根下，见到就搬进 log/ 文件夹。
+    try { await rename(LEGACY_LOG_PATH(runtimeDir), path); } catch { /* 无旧文件，正常 */ }
     try {
       const info = await stat(path);
-      if (info.size > REQUEST_LOG_MAX_BYTES) await rename(path, `${path}.old`).catch(() => {});
+      if (info.size > REQUEST_LOG_MAX_BYTES) await rename(path, join(dirname(path), 'mtop-request-log.old.jsonl')).catch(() => {});
     } catch { /* 首次写入前无文件，非错误 */ }
     await appendFile(path, JSON.stringify(entry) + '\n');
   } catch { /* 旁路，吞掉 */ }

@@ -317,16 +317,23 @@ test('fetchCatalog: RISK_CONTROL 与 AUTH_REQUIRED 一样直接上抛，不浪�
 // ── 8. 请求日志：JSONL 追加、逐行可解析
 import { appendRequestLog } from '../src/core/mtop-client.js';
 
-test('request log: 每次请求一行 JSONL，字段完整可回溯', async () => {
+test('request log: 归档到 log/ 文件夹，旧位置文件自动迁移', async () => {
   const base = await mkdtemp(join(tmpdir(), 'tb-rlog-'));
   tempDirs.push(base);
   const dir = join(base, '.runtime');
+  const logDir = join(dir, 'log');
+  const logPath = join(logDir, 'mtop-request-log.jsonl');
+  // 旧版日志躺在 .runtime 根下 → 首次写入时应被搬进 log/ 并保留内容。
+  await mkdir(dir, { recursive: true });
+  await writeFile(join(dir, 'mtop-request-log.jsonl'), '{"t":1,"legacy":true}\n');
   await appendRequestLog(dir, { t: 1000, ts: '2026-11-04T00:00:01.000Z', api: 'mtop.taobao.wsearch.appsearch', v: '1.0', ok: true, waitMs: 0, ms: 320, http: 200 });
   await appendRequestLog(dir, { t: 7000, ts: '2026-11-04T00:00:07.000Z', api: 'mtop.taobao.detail.getdetail', v: '6.0', ok: false, code: 'RISK_CONTROL', waitMs: 6120, ms: 410, ret: ['FAIL_SYS_RGV587::xx'] });
-  const lines = (await readFile(join(dir, 'mtop-request-log.jsonl'), 'utf8')).trim().split('\n');
-  assert.equal(lines.length, 2);
-  const first = JSON.parse(lines[0]);
-  const second = JSON.parse(lines[1]);
+  assert.ok(!(await readFile(join(dir, 'mtop-request-log.jsonl'), 'utf8').catch(() => null)), '旧位置文件应被迁移走');
+  const lines = (await readFile(logPath, 'utf8')).trim().split('\n');
+  assert.equal(lines.length, 3, '迁移的旧行 + 两条新记录');
+  assert.equal(JSON.parse(lines[0]).legacy, true, '旧日志内容不丢');
+  const first = JSON.parse(lines[1]);
+  const second = JSON.parse(lines[2]);
   assert.equal(first.ok, true);
   assert.equal(second.ok, false);
   assert.equal(second.code, 'RISK_CONTROL');

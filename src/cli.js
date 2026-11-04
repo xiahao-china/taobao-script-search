@@ -29,8 +29,8 @@ cookie.json 只读不被程序改写；签名令牌自动续签，登录态失�
 失效（更新 Cookie 后重试）；RISK_CONTROL = 风控拦截 RGV587（与登录态无关，程序刻意不
 自动重试——等待几分钟并在浏览器正常访问一次 taobao.com 后再试；batch 中触发会立即终
 止剩余条目，避免带坏状态继续撞接口）。
-请求日志：.runtime/mtop-request-log.jsonl 每行记录一次真实请求（时间/接口/结果/等待与
-耗时），被风控或异常时用它复盘查询节奏；超 5MB 自动轮转为 .old，可随时整文件删除。`;
+请求日志：.runtime/log/mtop-request-log.jsonl 每行记录一次真实请求（时间/接口/结果/等待与
+耗时），被风控或异常时用它复盘查询节奏；超 5MB 轮转为同文件夹 .old，可随时整文件删除。`;
 
 function envelope(operation, payload) {
   return { ok: true, operation, data: payload.data, error: null, meta: payload.meta };

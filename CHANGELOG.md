@@ -9,7 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Per-request JSONL log at `.runtime/mtop-request-log.jsonl`: one line per
+- Per-request JSONL log at `.runtime/log/mtop-request-log.jsonl` (dedicated
+  `log/` folder; legacy files at the old `.runtime` root location are
+  migrated automatically on first write): one line per
   real HTTP attempt (timestamp, api/version, ok / error code + `ret`, HTTP
   status, `waitMs` spent on rate-limit, `ms` duration, `probe`/`retry`
   flags). Purpose: reconstruct query cadence when investigating risk-control

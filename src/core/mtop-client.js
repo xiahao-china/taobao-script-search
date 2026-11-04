@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { readFile, writeFile, rename, rm, mkdir } from 'node:fs/promises';
+import { readFile, writeFile, rename, rm, mkdir, appendFile, stat } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { TaobaoError, checkAbort } from './errors.js';
@@ -24,6 +24,28 @@ const TOKEN_PROBE = ['mtop.common.getTimestamp', '1.0'];
 
 function pacingPath(runtimeDir) {
   return join(runtimePaths(runtimeDir || undefined).directory, 'mtop-pacing.json');
+}
+
+function requestLogPath(runtimeDir) {
+  return join(runtimePaths(runtimeDir || undefined).directory, 'mtop-request-log.jsonl');
+}
+
+// 单文件 5MB 上限：超过后整体挪到 .old（风控复盘看最近行为，老日志留档一份即可）。
+const REQUEST_LOG_MAX_BYTES = 5 * 1024 * 1024;
+
+// 请求日志（JSONL，每行一次真实 HTTP 尝试）：时间戳、接口、结果、限速等待、耗时。
+// 用途：被风控/异常时回溯「当时查了什么、什么节奏」。是旁路功能——任何写日志
+// 失败都不影响主链路；并发进程同时轮转的 rename 竞争由 catch 兜底。
+export async function appendRequestLog(runtimeDir, entry) {
+  try {
+    const path = requestLogPath(runtimeDir);
+    await mkdir(dirname(path), { recursive: true });
+    try {
+      const info = await stat(path);
+      if (info.size > REQUEST_LOG_MAX_BYTES) await rename(path, `${path}.old`).catch(() => {});
+    } catch { /* 首次写入前无文件，非错误 */ }
+    await appendFile(path, JSON.stringify(entry) + '\n');
+  } catch { /* 旁路，吞掉 */ }
 }
 
 // 跨进程令牌桶：请求前先占坑（把计划时刻写进文件），其他进程自动排队在其后。
@@ -117,7 +139,9 @@ export class MtopClient {
       store = await loadCookies(this.options.runtimeDir);
     }
     const header = cookieHeader(store);
+    const waitStart = Date.now();
     await reserveSlot(this.options.runtimeDir, this.options.minIntervalMs, this.options.jitterMs, signal);
+    const waitMs = Date.now() - waitStart; // 本次为满足限速实际等待的毫秒数（0=无需等待）
     checkAbort(signal);
     const token = (store.cookies._m_h5_tk?.value || '').split('_')[0];
     const timestamp = String(Date.now());
@@ -137,11 +161,24 @@ export class MtopClient {
     };
     if (header) headers.Cookie = header;
     let response;
+    const reqStart = Date.now();
+    // 请求日志：每次真实 HTTP 尝试一行（含重签重试、失败、取消），供风控/异常复盘。
+    const logOutcome = async outcome => {
+      await appendRequestLog(this.options.runtimeDir, {
+        t: reqStart, ts: new Date(reqStart).toISOString(), api, v: version,
+        ...(probe ? { probe: true } : {}), ...(retry ? { retry } : {}),
+        waitMs, ms: Date.now() - reqStart, ...outcome,
+      });
+    };
     const fetchSignal = signal ? AbortSignal.any([AbortSignal.timeout(this.options.timeoutMs), signal]) : AbortSignal.timeout(this.options.timeoutMs);
     try {
       response = await fetch(url, { headers, redirect: 'manual', signal: fetchSignal });
     } catch (error) {
-      if (signal?.aborted) throw new TaobaoError('CANCELLED', '任务已取消。');
+      if (signal?.aborted) {
+        await logOutcome({ ok: false, code: 'CANCELLED' });
+        throw new TaobaoError('CANCELLED', '任务已取消。');
+      }
+      await logOutcome({ ok: false, code: 'NETWORK_ERROR' });
       throw new TaobaoError('NETWORK_ERROR', `MTOP 请求失败：${error.message}`);
     }
     mergeSetCookies(store, response.headers.getSetCookie());
@@ -152,21 +189,26 @@ export class MtopClient {
     const newToken = (store.cookies._m_h5_tk?.value || '').split('_')[0];
     // 令牌过期：网关已通过 Set-Cookie 下发新 token，重签一次即可，不视为风控。
     if (codes.some(code => code.includes('TOKEN')) && newToken && newToken !== token && retry < 1) {
+      await logOutcome({ ok: false, code: 'TOKEN_EXPIRED_RETRIED', http: response.status });
       return this.request(api, version, data, { retry: retry + 1, signal, extraParams, referer });
     }
     if (codes.some(code => RISK_PATTERN.test(code))) {
       // 刻意不自动重试：风控是按请求指纹拦的，原地重试只会加重封禁。
+      await logOutcome({ ok: false, code: 'RISK_CONTROL', http: response.status, ret });
       throw new TaobaoError('RISK_CONTROL',
         '触发淘宝风控拦截（RGV587）：请求特征或频率被判不可信，与登录态无关。'
         + '请等待几分钟到十几分钟，期间在浏览器正常访问一次 taobao.com 再重试；若连续触发请拉长请求间隔。',
         { ret });
     }
     if (codes.some(code => AUTH_PATTERN.test(code))) {
+      await logOutcome({ ok: false, code: 'AUTH_REQUIRED', http: response.status, ret });
       throw new TaobaoError('AUTH_REQUIRED', '淘宝登录态失效。请先在浏览器登录淘宝，然后执行 taobao sync-cookie 同步 Cookie 后重试。', { ret });
     }
     if (!codes.some(code => code === 'SUCCESS')) {
+      await logOutcome({ ok: false, code: 'MTOP_ERROR', http: response.status, ret });
       throw new TaobaoError('MTOP_ERROR', `MTOP 返回错误：${ret.join('; ') || `HTTP ${response.status}`}`, { ret });
     }
+    await logOutcome({ ok: true, http: response.status });
     return parsed.data;
   }
 }

@@ -313,3 +313,23 @@ test('fetchCatalog: RISK_CONTROL 与 AUTH_REQUIRED 一样直接上抛，不浪�
   await assert.rejects(adapter.fetchCatalog('123', undefined), error => error.code === 'RISK_CONTROL');
   assert.equal(client.calls.length, 1, '风控按指纹拦，换接口无意义，不得回退重试');
 });
+
+// ── 8. 请求日志：JSONL 追加、逐行可解析
+import { appendRequestLog } from '../src/core/mtop-client.js';
+
+test('request log: 每次请求一行 JSONL，字段完整可回溯', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'tb-rlog-'));
+  tempDirs.push(base);
+  const dir = join(base, '.runtime');
+  await appendRequestLog(dir, { t: 1000, ts: '2026-11-04T00:00:01.000Z', api: 'mtop.taobao.wsearch.appsearch', v: '1.0', ok: true, waitMs: 0, ms: 320, http: 200 });
+  await appendRequestLog(dir, { t: 7000, ts: '2026-11-04T00:00:07.000Z', api: 'mtop.taobao.detail.getdetail', v: '6.0', ok: false, code: 'RISK_CONTROL', waitMs: 6120, ms: 410, ret: ['FAIL_SYS_RGV587::xx'] });
+  const lines = (await readFile(join(dir, 'mtop-request-log.jsonl'), 'utf8')).trim().split('\n');
+  assert.equal(lines.length, 2);
+  const first = JSON.parse(lines[0]);
+  const second = JSON.parse(lines[1]);
+  assert.equal(first.ok, true);
+  assert.equal(second.ok, false);
+  assert.equal(second.code, 'RISK_CONTROL');
+  assert.equal(second.waitMs, 6120, '限速等待时长必须落档，否则无法复盘节奏');
+  assert.ok(second.t > first.t, '两次请求的时间戳可推导真实间隔');
+});

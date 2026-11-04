@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Per-request JSONL log at `.runtime/mtop-request-log.jsonl`: one line per
+  real HTTP attempt (timestamp, api/version, ok / error code + `ret`, HTTP
+  status, `waitMs` spent on rate-limit, `ms` duration, `probe`/`retry`
+  flags). Purpose: reconstruct query cadence when investigating risk-control
+  or failures. Auto-rotates to `.old` past 5 MB; write failures are silently
+  ignored (bypass only).
 - Session warm-up (once per process): when `cna` (device-fingerprint cookie) is
   missing, one homepage visit fetches it; when the sign token is missing, a
   zero-cost dummy request (`mtop.common.getTimestamp`) exchanges it from the

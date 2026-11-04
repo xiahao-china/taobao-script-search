@@ -118,3 +118,5 @@ const result = await client.getOrders({ page: 1 }, signal);
 `INVALID_ARGUMENT`、`AUTH_REQUIRED`（未配置 Cookie / 登录态失效）、`RISK_CONTROL`（风控拦截 RGV587：请求指纹/频率被判不可信，与登录态无关；刻意不自动重试）、`NETWORK_ERROR`、`NO_RESULTS`、`ITEM_UNAVAILABLE`、`SKU_NOT_FOUND`、`SKU_UNAVAILABLE`、`SPEC_AMBIGUOUS`、`SPEC_UNAVAILABLE`、`SKU_PRICE_UNCONFIRMED`、`DEFAULT_PRICE_UNCONFIRMED`、`CANCELLED`。
 
 会话预热：进程内首次请求前，若缺 `cna`（设备指纹 Cookie）会先访问一次 taobao.com 主页领取；若缺签名令牌会先用零成本哑请求（`mtop.common.getTimestamp`）向网关换取 `_m_h5_tk`。均为尽力而为，失败走原有令牌重签链路兜底。
+
+请求日志：每次真实 HTTP 尝试（含令牌重签重试与各类失败）追加一行 JSONL 到 `.runtime/mtop-request-log.jsonl`，字段：`t`/`ts`（发起时刻）、`api`/`v`、`ok`、失败时的 `code`（及 `ret`）、`http` 状态码、`waitMs`（为满足限速实际等待）、`ms`（请求耗时）、可选 `probe`/`retry` 标记。超 5MB 自动轮转为 `.old`；写日志失败静默忽略，绝不影响主链路。

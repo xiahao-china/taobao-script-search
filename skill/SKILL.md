@@ -52,6 +52,9 @@ node "<skill目录>/scripts/taobao.mjs" search "关键词" --limit 10
 # DSR 三项分（含同行水平）、质量三评分、综合分、信用等级、店铺标签
 # （好评率/发货时效等）。store 数据只在 PC 详情接口路径产出；H5 路径
 # 与个人转卖商品均为 null（meta.coverage.store 据实标记）。
+# detail 还会自动串联一次店铺接口，store 块附带 fansNum（粉丝数，数字）、
+# ifHideFansNum（商家隐藏标志）、goldenSeller（金牌卖家）——粉丝数是店铺
+# 选择的重要依据；店铺接口失败时静默降级，detail 本身不受影响。
 
 # 附带评价计数（多 1 次请求）
 ... detail <itemId> --labels '["规格标签"]' --reviews

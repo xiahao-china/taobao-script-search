@@ -84,7 +84,7 @@ const orders = await client.getOrders({ page: 1 });
 
 ### 店铺信誉与评价计数
 
-- `detail` 输出自带 `store` 块（零额外请求，取自详情接口）：`sellerType`（`B`=天猫/旗舰店，`C`=淘宝集市/个人）与 `isTmall`、DSR 三项分（描述/服务/物流 + 同行水平）、质量三评分、综合分、信用等级、店铺标签（好评率/发货时效等）。个人转卖等无店铺数据时为 `store: null`。
+- `detail` 输出自带 `store` 块（零额外请求，取自详情接口）：`sellerType`（`B`=天猫/旗舰店，`C`=淘宝集市/个人）与 `isTmall`、DSR 三项分（描述/服务/物流 + 同行水平）、质量三评分、综合分、信用等级、店铺标签（好评率/发货时效等）。`detail` 还会自动串联一次店铺接口，附带 `fansNum`（粉丝数）、`ifHideFansNum`、`goldenSeller`（金牌卖家）；店铺接口失败时静默降级，不影响 detail。个人转卖等无店铺数据时为 `store: null`。
 - `detail --reviews` 额外发 1 次请求，附 `reviewSummary`：`total`（平台封顶值，如 2000）、`totalFuzzy`（"2000+" 模糊总数）、`foldedDefault`（折叠的默认好评数）与 `foldedRatio`（占比高提示刷单嫌疑）。平台已隐藏中差评分项数据，无好评/差评数量可取。
 
 CLI 与 SDK 是同一实现（`search` / `getSpecs` / `getDetail` / `getOrders` / `batch`）。接口输出契约见 [docs/api-contract.md](docs/api-contract.md)；目录说明见 [docs/project-structure.md](docs/project-structure.md)。

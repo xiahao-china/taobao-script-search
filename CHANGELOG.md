@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `detail` now enriches the `store` block with shop-level data fetched via
+  one chained `mtop.taobao.shop.impression.logo.get` request (using the
+  `sellerId`/`shopId` found in the pcdetail seller node): `fansNum`
+  (follower count), `ifHideFansNum`, `goldenSeller`. The extra request
+  goes through the global rate limiter and degrades silently on failure —
+  `detail` itself is unaffected. Motivation: follower count is a key
+  signal when comparing shops.
+
 - Per-request JSONL log at `.runtime/log/mtop-request-log.jsonl` (dedicated
   `log/` folder; legacy files at the old `.runtime` root location are
   migrated automatically on first write): one line per

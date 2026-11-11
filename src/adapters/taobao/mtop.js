@@ -232,7 +232,7 @@ export class MtopAdapter {
         // sellerNode：B 店带 shopName；C 店（集市/个人转卖）只有 sellerNick+sellerType+evaluates。
         // storeNode：B 店 storeCardVO 带 labelList+evaluates；C 店只剩 sellerType+creditLevel（无 evaluates）。
         const nodes = expand(payload);
-        let itemNode = null, sellerNode = null, storeNode = null;
+        let itemNode = null, sellerNode = null, storeNode = null, shopIds = null;
         for (const node of nodes) {
           if (!itemNode && typeof node?.title === 'string' && stripTags(node.title).length > 1) itemNode = node;
           if (!sellerNode) {
@@ -245,10 +245,15 @@ export class MtopAdapter {
             if (Array.isArray(node?.labelList) && Array.isArray(node?.evaluates)) storeNode = node;
             else if (node?.sellerType && node?.creditLevel != null && !Array.isArray(node?.evaluates)) storeNode = node;
           }
-          if (itemNode && sellerNode && storeNode) break;
+          // seller 节点带数字型 sellerId+shopId（仅 pcdetail 路径），供粉丝数串联查询用。
+          if (!shopIds && node?.sellerId != null && node?.shopId != null) {
+            shopIds = { sellerId: String(node.sellerId), shopId: String(node.shopId) };
+          }
+          if (itemNode && sellerNode && storeNode && shopIds) break;
         }
         return {
           ...catalog,
+          shop: shopIds,
           item: {
             title: itemNode ? itemNode.title : null,
             images: Array.isArray(itemNode?.images) ? itemNode.images : null,
@@ -309,10 +314,37 @@ export class MtopAdapter {
     };
   }
 
+  // 店铺级增强信息（粉丝数/金牌卖家）：pcdetail 响应本身不含这些字段，
+  // 需凭 seller 节点的 sellerId+shopId 额外调一次 impression.logo.get（走全局限速）。
+  // 粉丝数是店铺选择的关键依据，因此 detail 串联查询；失败不打断 detail——
+  // 它是增强字段，拿不到就保持原 store 不变。取消/鉴权/风控错误照常上抛。
+  async enrichStoreFans(catalog, signal) {
+    const { sellerId, shopId } = catalog.shop ?? {};
+    if (!sellerId || !shopId) return catalog;
+    let payload;
+    try {
+      payload = await this.client.request('mtop.taobao.shop.impression.logo.get', '1.0',
+        { sellerId, shopId }, { signal });
+    } catch (error) {
+      if (error.code === 'CANCELLED' || error.code === 'AUTH_REQUIRED' || error.code === 'RISK_CONTROL') throw error;
+      return catalog;
+    }
+    const result = payload?.result;
+    if (!result || result.fansNum == null) return catalog;
+    const fans = {
+      fansNum: typeof result.fansNum === 'number' ? result.fansNum : String(result.fansNum),
+      ifHideFansNum: Boolean(result.ifHideFansNum),
+      goldenSeller: Boolean(result.goldenSeller),
+    };
+    catalog.store = { ...(catalog.store ?? {}), ...fans };
+    return catalog;
+  }
+
   async getDetail(itemId, spec, options = {}, signal) {
     requireId(itemId);
     return this.withLog('detail', { itemId, spec: spec ?? null }, async () => {
       const catalog = await this.fetchCatalog(itemId, signal);
+      await this.enrichStoreFans(catalog, signal);
       return this.detailFromCatalog(catalog, itemId, spec);
     });
   }

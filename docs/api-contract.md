@@ -56,7 +56,7 @@ await client.batch(batchInput, signal);
 
 `data` 包含商品/规格标识、`specId`、`skuId`、`specLabel`、`selections`、标题、链接、店铺、`store`、价格、库存、`attributes`、图片、`selectedLabels`。价格含十进制 `amount`、`currency`、`basis`、原始显示文本、`scope` 及观察时间。`basis: api-displayed` 表示接口显示价，不等同于最终付款价。`meta.priceEvidence` 为 `sku-id-map` 或 `default-sku`；`meta.coverage` 逐项标记 stock/shipping/attributes/description/store 的取到情况。
 
-`store` 块（零额外请求，来自 PC 详情接口路径）：`sellerType`（`B`=天猫/旗舰店，`C`=淘宝集市/个人）与 `isTmall`、`dsr`（描述/服务/物流三项 + 同行水平 `levelText`）、`scores`（质量三评分）、`overallScore`、`creditLevel`、`labels`（店铺标签）。**H5 详情路径的响应中没有店铺信誉节点，此时 `store: null`**（个人转卖商品同样为 null）；`meta.coverage.store` 据实标记。
+`store` 块（来自 PC 详情接口路径）：`sellerType`（`B`=天猫/旗舰店，`C`=淘宝集市/个人）与 `isTmall`、`dsr`（描述/服务/物流三项 + 同行水平 `levelText`）、`scores`（质量三评分）、`overallScore`、`creditLevel`、`labels`（店铺标签）。`detail` 会自动凭 seller 节点的 `sellerId`+`shopId` 串联一次 `mtop.taobao.shop.impression.logo.get`，在 `store` 块追加 `fansNum`（粉丝数，数字）、`ifHideFansNum`（商家隐藏标志）、`goldenSeller`（金牌卖家）；该次请求走全局限速，失败时静默降级（字段缺席，不影响 detail 本身）。**H5 详情路径的响应中没有店铺信誉节点，此时 `store: null`**（个人转卖商品同样为 null）；`meta.coverage.store` 据实标记。
 
 `stock` 保留接口的 quantity 值，可能有显示上限，不能用作包装件数。
 

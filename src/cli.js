@@ -12,7 +12,9 @@ const help = `淘宝查询：纯 HTTP MTOP 直连（零浏览器依赖，即用�
   taobao detail <商品ID> --spec-id <规格ID> | --spec '{...}' | --labels '[...]' | --default [--reviews]
       --reviews 附带评价计数（totalFuzzy 模糊总数 / foldedDefault 默认好评数，多 1 次请求）；
       输出 store 块含店铺类型（isTmall）/DSR 三项分/质量分/店铺标签（零额外请求；
-      H5 详情路径无店铺数据，此时为 null）。
+      H5 详情路径无店铺数据，此时为 null）。detail 额外串联一次店铺接口，
+      附带 fansNum（粉丝数）/ifHideFansNum/goldenSeller（金牌卖家）——失败静默降级，
+      不影响 detail 本身。
   taobao batch --file <批量清单.json> [--output 结果.json]
       清单格式：{"searches":[{"keyword":"...","options":{"limit":5}}],
                 "products":[{"itemId":"...","specs":[{"labels":["..."]}|null]}]}

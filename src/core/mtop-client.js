@@ -80,7 +80,8 @@ export async function appendOperationLog(runtimeDir, entry) {
 // 更晚的计划时，以其为准顺延一次，避免双进程同时放行。
 // 写入用「临时文件 + rename 原子替换」：writeFile 先截断再写，并发读会读到
 // 半截 JSON，readLastAt 捕获后返回 0，导致限速被击穿。
-async function reserveSlot(runtimeDir, minIntervalMs, jitterMs, signal) {
+// 导出供非网关 HTTP 通道复用（店铺内搜索的 *.taobao.com 页面请求同享全局限速）。
+export async function reserveSlot(runtimeDir, minIntervalMs, jitterMs, signal) {
   if (!Number.isFinite(minIntervalMs) || minIntervalMs <= 0) return;
   checkAbort(signal);
   const path = pacingPath(runtimeDir);

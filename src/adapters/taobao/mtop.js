@@ -232,7 +232,7 @@ export class MtopAdapter {
         // sellerNode：B 店带 shopName；C 店（集市/个人转卖）只有 sellerNick+sellerType+evaluates。
         // storeNode：B 店 storeCardVO 带 labelList+evaluates；C 店只剩 sellerType+creditLevel（无 evaluates）。
         const nodes = expand(payload);
-        let itemNode = null, sellerNode = null, storeNode = null, shopIds = null;
+        let itemNode = null, sellerNode = null, storeNode = null, shopIds = null, shopUrl = null;
         for (const node of nodes) {
           if (!itemNode && typeof node?.title === 'string' && stripTags(node.title).length > 1) itemNode = node;
           if (!sellerNode) {
@@ -249,11 +249,21 @@ export class MtopAdapter {
           if (!shopIds && node?.sellerId != null && node?.shopId != null) {
             shopIds = { sellerId: String(node.sellerId), shopId: String(node.shopId) };
           }
-          if (itemNode && sellerNode && storeNode && shopIds) break;
+          // 店铺 URL（pcdetail 路径，如 https://shop131282813.taobao.com/category.htm）：
+          // 店铺内搜索（shop-search）凭它定位子域名；C 店可能只有 pcShopUrl。
+          if (!shopUrl) {
+            if (typeof node?.shopUrl === 'string' && node.shopUrl) shopUrl = node.shopUrl;
+            else if (typeof node?.pcShopUrl === 'string' && node.pcShopUrl) {
+              shopUrl = node.pcShopUrl.startsWith('//') ? `https:${node.pcShopUrl}` : node.pcShopUrl;
+            }
+          }
+          if (itemNode && sellerNode && storeNode && shopIds && shopUrl) break;
         }
         return {
           ...catalog,
-          shop: shopIds,
+          // shopUrl 与 sellerId/shopId 相互独立（C 店常只有 shopUrl 无数值 ID）：
+          // 两者皆无时保持 null，有其一即产出记录。
+          shop: (shopIds || shopUrl) ? { ...(shopIds ?? {}), ...(shopUrl ? { shopUrl } : {}) } : null,
           item: {
             title: itemNode ? itemNode.title : null,
             images: Array.isArray(itemNode?.images) ? itemNode.images : null,

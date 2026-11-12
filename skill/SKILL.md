@@ -1,6 +1,6 @@
 ---
 name: taobao-product-search
-description: 淘宝商品查询工具（纯 HTTP MTOP 直连）。当用户需要搜索淘宝商品、查商品规格/SKU、按规格核价（真实价格而非引流价）、查店铺信誉（天猫标识/DSR 评分/店铺标签）、查评价数量与默认好评占比、批量比价或配单、查购物记录（已买到的宝贝/订单列表）时使用。触发词：淘宝搜一下、查淘宝商品、淘宝价格、SKU 核价、店铺评分、天猫还是淘宝、评价多少、批量查商品、商品比价、我的订单、购物记录。返回结构化 JSON，含标题/价格/库存/店铺/SKU 树/订单明细。
+description: 淘宝商品查询工具（纯 HTTP MTOP 直连）。当用户需要搜索淘宝商品、查商品规格/SKU、按规格核价（真实价格而非引流价）、查店铺信誉（天猫标识/DSR 评分/店铺标签）、查评价数量与默认好评占比、批量比价或配单、查购物记录（已买到的宝贝/订单列表）、在某家店铺内搜商品（店内搜索/搜本店）时使用。触发词：淘宝搜一下、查淘宝商品、淘宝价格、SKU 核价、店铺评分、天猫还是淘宝、评价多少、批量查商品、商品比价、我的订单、购物记录、店内搜索、这家店里搜。返回结构化 JSON，含标题/价格/库存/店铺/SKU 树/订单明细。
 agent_created: true
 ---
 
@@ -8,7 +8,7 @@ agent_created: true
 
 ## Overview
 
-通过捆绑的 CLI（零 npm 依赖，Node >= 22）直连淘宝 MTOP H5 网关查询商品数据与购物记录。五个命令：`search`（关键词搜索）、`specs`（规格树）、`detail`（按 SKU 核价）、`batch`（批量）、`orders`（已买到的宝贝）。输出统一 `{ ok, operation, data, error, meta }` JSON 信封。
+通过捆绑的 CLI（零 npm 依赖，Node >= 22）直连淘宝 MTOP H5 网关查询商品数据与购物记录。六个命令：`search`（关键词搜索）、`specs`（规格树）、`detail`（按 SKU 核价）、`shop-search`（店铺内搜索）、`batch`（批量）、`orders`（已买到的宝贝）。输出统一 `{ ok, operation, data, error, meta }` JSON 信封。
 
 ## 关键约束（务必遵守）
 
@@ -18,7 +18,7 @@ agent_created: true
 - **订单号是字符串**：17 位订单号超 JS number 精度，解析一律用对象键；输出保持字符串。
 - **失败处理**：`AUTH_REQUIRED` = Cookie 过期/未配置，提示用户从浏览器重新复制并更新 cookie 文件；`RISK_CONTROL` = 风控拦截（RGV587，请求指纹/频率问题，与登录态无关），**刻意不自动重试**（重试加重封禁）——等待几分钟、在浏览器正常访问一次 taobao.com 后再试；`ITEM_UNAVAILABLE` = 商品下架。batch 命中 AUTH/RISK 会立即终止剩余条目（`data.aborted`），处理后重跑。
 - **请求日志**：`.runtime/log/mtop-request-log.jsonl` 每行一次真实请求（时间戳/接口/结果/限速等待 waitMs/耗时 ms），查节奏、复盘风控触发点用它；超 5MB 自动轮转同文件夹 `.old`，可整文件删除不影响功能。
-- **操作日志**：`.runtime/log/mtop-operation-log.jsonl` 每行一次业务查询（时间戳/查询类型 search·specs·detail·orders·review-summary·batch/入参/完整业务结果或错误码）。想回溯「当时搜了什么关键词、返回了哪些商品、详情价格多少」看这份；两份日志同文件夹同轮转规则。
+- **操作日志**：`.runtime/log/mtop-operation-log.jsonl` 每行一次业务查询（时间戳/查询类型 search·specs·detail·orders·review-summary·shop-search·batch/入参/完整业务结果或错误码）。想回溯「当时搜了什么关键词、返回了哪些商品、详情价格多少」看这份；两份日志同文件夹同轮转规则。
 
 ## 调用方式
 
@@ -62,6 +62,18 @@ node "<skill目录>/scripts/taobao.mjs" search "关键词" --limit 10
 # （折叠的默认好评数）/ foldedRatio——占比高提示刷单嫌疑。
 # 平台已隐藏中差评分项，拿不到好评/差分明细数量，也不要向用户编造。
 
+# 店铺内搜索（在某家店铺里搜商品；店铺引用=完整 URL 或数字 shopId）
+... shop-search "0805 电阻" https://shop131282813.taobao.com [--page 1] [--pages 1]
+... shop-search "0805 电阻" 131282813
+# 返回 items[]: itemId/title/priceText（现价，字体反爬已还原）/strikethroughText
+# （划线价）/salesText（已售）/url/imageUrl；data.total（匹配总数）/pages。
+# wid（店铺挂件号）自动从店铺页提取并缓存 .runtime/shop-wid.json；每次搜索
+# 先抓一次店铺搜索页配对价格字体（同会话页面字体 × 搜索数据），价格解不出时
+# priceText=null 且 priceUnknown=true（混合策略，不臆造）。昵称子域名
+# （如 youxin-electronic.taobao.com）与数值子域名均可。
+# meta.widSource：page=本次现取 / cache=缓存复用 / cache-degraded=页面被风控
+# 但用缓存 wid 降级搜索（此时价格必为 null）。
+
 # 批量（输入 JSON：{ "searches": [{"keyword": "...", "options": {"limit": 5}}], "products": [{"itemId": "...", "specs": [{"labels": ["..."], "qty": 10}]}] })
 ... batch --file <清单.json> [--output 结果.json]
 
@@ -78,6 +90,12 @@ node "<skill目录>/scripts/taobao.mjs" search "关键词" --limit 10
 2. 从结果挑 2~4 个标题匹配的候选，逐个 `specs` 看规格档位
 3. 对用户要的规格 `detail` 核实价与库存，对比后给推荐（附 itemId 与链接 `https://item.taobao.com/item.htm?id=<itemId>`）
 4. 顺带核对规格档位的价格差（同一链接不同规格价差可能一倍以上）
+
+### 典型工作流：店内搜索比价
+
+1. 用户指定店铺（或先 `detail` 任意该店商品，输出里店铺 URL 可能缺失——直接问用户要店铺链接更快）
+2. `shop-search <关键词> <店铺URL或shopId>` 拉店内候选（现价已还原，划线价可对比折扣）
+3. 候选商品仍按全局规矩跑 `detail` 按 SKU 核价后再推荐——店内列表价同样可能 ≠ 实价
 
 ### 典型工作流：购物记录统计
 

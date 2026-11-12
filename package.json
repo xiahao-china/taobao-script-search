@@ -29,7 +29,7 @@
   },
   "scripts": {
     "taobao": "node bin/taobao.js",
-    "test": "node --test tools/mtop-local.test.js",
+    "test": "node --test tools/mtop-local.test.js tools/shop-search.test.js",
     "probe:mtop": "node tools/probe-mtop.js",
     "pkg": "node tools/package-skill.mjs && powershell -NoProfile -Command \"Compress-Archive -Path .runtime/skill-stage/taobao-product-search -DestinationPath dist/taobao-product-search.zip -Force\""
   },

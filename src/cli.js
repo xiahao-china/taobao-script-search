@@ -5,6 +5,7 @@ import { dirname, resolve } from 'node:path';
 import { failure, TaobaoError } from './core/errors.js';
 import { loadCookies, saveCookies, mergeCookieString, cookieSummary, rootCookiePath } from './core/cookie-store.js';
 import { MtopAdapter } from './adapters/taobao/mtop.js';
+import { ShopSearchAdapter } from './adapters/taobao/shop-search.js';
 
 const help = `淘宝查询：纯 HTTP MTOP 直连（零浏览器依赖，即用即调）
   taobao search <关键词> [--limit 20] [--page 1] [--sort default]
@@ -22,6 +23,11 @@ const help = `淘宝查询：纯 HTTP MTOP 直连（零浏览器依赖，即用�
   taobao orders [--page 1] [--tab all] [--pages N] [--output 订单.json]
       已买到的宝贝（购物记录）。服务端固定每页 15 条；--pages N 从 --page 起
       连翻 N 页（页间隔走全局限速）。tabCode 仅实测过 all；金额为字符串。
+  taobao shop-search <关键词> <店铺URL或shopId> [--page 1] [--pages 1] [--output 结果.json]
+      店铺内搜索。店铺引用支持完整 URL（https://shop123.taobao.com/... 或昵称子域名页）
+      或数字 shopId。价格经字体反爬还原（划线价/现价），解不出时 priceText=null、
+      priceUnknown=true。wid（店铺挂件号）自动提取并缓存于 .runtime/shop-wid.json；
+      每次搜索先抓一次店铺页配对价格字体，全程走全局限速。
   taobao sync-cookie --cookie-string "a=b; c=d"   导入 Cookie（或 --stdin 从管道读入）
 首次使用：复制仓库根目录 cookie.example.json 为 cookie.json，把 cookie 字段替换成
 浏览器里 taobao.com 的完整 Cookie 字符串（获取方法见 README「配置 Cookie」）。
@@ -100,6 +106,15 @@ async function mtopCommand(operation, positionals, values, control) {
     ...(values.sort ? { sort: values.sort } : {}),
   };
   if (operation === 'search') return envelope('search', await adapter.search(positionals[1], queryOptions, control.signal));
+  if (operation === 'shop-search') {
+    if (!positionals[1] || !positionals[2]) {
+      throw new TaobaoError('INVALID_ARGUMENT', 'shop-search 需要 <关键词> 和 <店铺URL或shopId> 两个参数。');
+    }
+    const shopAdapter = new ShopSearchAdapter({ runtimeDir: values['runtime-dir'] || null });
+    const pages = Number(values.pages || 1);
+    return envelope('shop-search', await shopAdapter.shopSearch(positionals[1], positionals[2],
+      { page: Number(values.page || 1), pages }, control.signal));
+  }
   if (operation === 'specs') return envelope('specs', await adapter.getSpecs(positionals[1], queryOptions, control.signal));
   if (operation === 'orders') {
     const page = Number(values.page || 1);
@@ -164,8 +179,8 @@ export async function main() {
     let result;
     const control = { signal: controller.signal };
     if (operation === 'sync-cookie') result = await syncCookie(values);
-    else if (['search', 'specs', 'detail', 'batch', 'orders'].includes(operation)) result = await mtopCommand(operation, positionals, values, control);
-    else throw new TaobaoError('INVALID_ARGUMENT', `未知命令：${operation}。可用：search / specs / detail / batch / orders / sync-cookie。`);
+    else if (['search', 'specs', 'detail', 'batch', 'orders', 'shop-search'].includes(operation)) result = await mtopCommand(operation, positionals, values, control);
+    else throw new TaobaoError('INVALID_ARGUMENT', `未知命令：${operation}。可用：search / specs / detail / shop-search / batch / orders / sync-cookie。`);
     process.removeListener('SIGINT', cancel);
     const rendered = JSON.stringify(result, null, 2) + '\n';
     if (values.output) { const path = resolve(values.output); await mkdir(dirname(path), { recursive: true }); await writeFile(path, rendered); }

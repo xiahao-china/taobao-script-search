@@ -1,8 +1,8 @@
 import { TaobaoError, requireId } from '../../core/errors.js';
 import { parsePrice } from '../../core/money.js';
-import { MtopClient, parseBody, appendOperationLog } from '../../core/mtop-client.js';
+import { MtopClient, withOperationLog } from '../../core/mtop-client.js';
 import { normalizeUrl } from '../../core/url.js';
-import { extractCatalog, resolveSpec, publicSpecs, skuPrice } from './specs.js';
+import { expandNodes, extractCatalogFromNodes, resolveSpec, publicSpecs, skuPrice } from './specs.js';
 import { assertOrdersPayload } from './orders.js';
 
 const ORDER_TAB_PATTERN = /^[a-z_]{2,20}$/;
@@ -22,19 +22,7 @@ const stripTags = value => clean(String(value || '')
   .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
   .replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&nbsp;/g, ' '));
 
-// apiStack 的 value 常是内嵌 JSON 字符串；深搜前先把对象字符串解开。
-function expand(data) {
-  const queue = [data], seen = new Set(), nodes = [];
-  for (let visited = 0; queue.length && visited < 2000; visited++) {
-    let value = queue.shift();
-    if (typeof value === 'string' && value.trim().startsWith('{')) value = parseBody(value);
-    if (!value || typeof value !== 'object' || seen.has(value)) continue;
-    seen.add(value);
-    nodes.push(value);
-    for (const child of Object.values(value).slice(0, 200)) if (typeof child === 'object' || typeof child === 'string') queue.push(child);
-  }
-  return nodes;
-}
+
 
 const ITEM_KEYS = ['itemId', 'item_id', 'id'];
 const looksLikeItem = row => row && typeof row === 'object' &&
@@ -43,7 +31,7 @@ const looksLikeItem = row => row && typeof row === 'object' &&
 function collectRows(data) {
   if (Array.isArray(data?.itemsArray)) return data.itemsArray;
   if (Array.isArray(data?.data?.itemsArray)) return data.data.itemsArray;
-  for (const node of expand(data)) {
+  for (const node of expandNodes(data, { maxNodes: 2000, maxChildren: 200 })) {
     for (const value of Object.values(node)) {
       if (Array.isArray(value) && value.length && value.some(looksLikeItem)) return value;
     }
@@ -158,21 +146,7 @@ export class MtopAdapter {
   // 操作日志包装器：每次业务查询落一行（查询类型/入参/完整业务结果或错误），
   // 与 mtop-client 的 HTTP 请求日志互补。日志是旁路，写失败不影响查询本身。
   async withLog(operation, params, fn) {
-    const start = Date.now();
-    const base = { t: start, ts: new Date(start).toISOString(), operation, params };
-    try {
-      const result = await fn();
-      await appendOperationLog(this.options.runtimeDir, {
-        ...base, ok: true, ms: Date.now() - start, data: result?.data ?? null,
-      });
-      return result;
-    } catch (error) {
-      await appendOperationLog(this.options.runtimeDir, {
-        ...base, ok: false, ms: Date.now() - start,
-        error: { code: error.code || 'MTOP_ERROR', message: error.message },
-      });
-      throw error;
-    }
+    return withOperationLog(this.options.runtimeDir, operation, params, 'MTOP_ERROR', fn);
   }
 
   async search(keyword, options = {}, signal) {
@@ -225,13 +199,13 @@ export class MtopAdapter {
         lastError = error;
         continue;
       }
-      const catalog = extractCatalog(payload);
+      const nodes = expandNodes(payload, { maxNodes: 2000, maxChildren: 200 });
+      const catalog = extractCatalogFromNodes(nodes);
       if (catalog.skuBase || catalog.skuCore) {
         // item 对象不一定带 itemId 字段；skuBase/props 值对象只有 name，不会误匹配。
-        // 店铺字段在不同响应层级名称不一，一趟扫描按优先级取出。
+        // 店铺字段在不同响应层级名称不一，复用同一趟展开的 nodes 按优先级取出。
         // sellerNode：B 店带 shopName；C 店（集市/个人转卖）只有 sellerNick+sellerType+evaluates。
         // storeNode：B 店 storeCardVO 带 labelList+evaluates；C 店只剩 sellerType+creditLevel（无 evaluates）。
-        const nodes = expand(payload);
         let itemNode = null, sellerNode = null, storeNode = null, shopIds = null, shopUrl = null;
         for (const node of nodes) {
           if (!itemNode && typeof node?.title === 'string' && stripTags(node.title).length > 1) itemNode = node;
@@ -417,7 +391,7 @@ export class MtopAdapter {
   // 批量执行：单项失败不影响其余项；但登录态失效（AUTH_REQUIRED）或风控拦截
   // （RISK_CONTROL）会立即终止整批——那两种状态下继续请求只会逐项重复失败
   // 并持续累积坏指纹（登录态体检：不带坏状态去撞接口）。
-  async batch(input, signal) {
+  async batch(input, signal, { onProgress } = {}) {
     return this.withLog('batch', {
       searches: (input.searches || []).length,
       products: (input.products || []).length,
@@ -428,11 +402,23 @@ export class MtopAdapter {
       const noteFatal = error => {
         if (isFatal(error) && !aborted) aborted = { code: error.code, message: error.message };
       };
+      const emitProgress = async () => {
+        if (!onProgress) return;
+        const failed = results.filter(item => item.error).length;
+        await onProgress({
+          results: [...results],
+          total: results.length,
+          succeeded: results.length - failed,
+          failed,
+          ...(aborted ? { aborted } : {}),
+        });
+      };
       for (const entry of input.searches || []) {
         if (aborted) break;
         const { keyword, options } = typeof entry === 'string' ? { keyword: entry, options: {} } : entry;
         try { results.push({ kind: 'search', keyword, result: await this.search(keyword, options, signal) }); }
         catch (error) { results.push({ kind: 'search', keyword, error: { code: error.code || 'MTOP_ERROR', message: error.message } }); noteFatal(error); }
+        await emitProgress();
       }
       for (const product of input.products || []) {
         if (aborted) break;
@@ -445,6 +431,7 @@ export class MtopAdapter {
         } catch (error) {
           for (const spec of specs) results.push({ kind: spec ? 'detail' : 'specs', itemId: product.itemId, error: { code: error.code || 'MTOP_ERROR', message: error.message } });
           noteFatal(error);
+          await emitProgress();
           continue;
         }
         for (const spec of specs) {
@@ -456,6 +443,7 @@ export class MtopAdapter {
             if (isFatal(error)) { noteFatal(error); break; }
           }
         }
+        await emitProgress();
       }
       const failed = results.filter(item => item.error).length;
       return {

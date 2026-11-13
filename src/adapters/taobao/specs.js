@@ -6,20 +6,38 @@ import { parseBody } from '../../core/json-body.js';
 const hash = text => createHash('sha256').update(text).digest('hex').slice(0, 16);
 const clean = value => String(value || '').replace(/\s+/g, ' ').trim();
 
-export function extractCatalog(payload) {
-  const queue = [payload], seen = new Set();
-  let skuBase = null, skuCore = null, itemId = null;
-  for (let visited = 0; queue.length && visited < 1000; visited++) {
-    let value = queue.shift();
+// 单趟 BFS 展开节点（解开内嵌 JSON 字符串）；用下标推进避免 queue.shift() 的 O(n) 移位开销。
+export function expandNodes(data, { maxNodes = 1000, maxChildren = 100 } = {}) {
+  const queue = [data], seen = new Set(), nodes = [];
+  for (let head = 0; head < queue.length && nodes.length < maxNodes; head++) {
+    let value = queue[head];
     if (typeof value === 'string' && value.trim().startsWith('{')) value = parseBody(value);
     if (!value || typeof value !== 'object' || seen.has(value)) continue;
     seen.add(value);
+    nodes.push(value);
+    const children = Object.values(value);
+    const limit = Math.min(children.length, maxChildren);
+    for (let i = 0; i < limit; i++) {
+      const child = children[i];
+      if (typeof child === 'object' || typeof child === 'string') queue.push(child);
+    }
+  }
+  return nodes;
+}
+
+export function extractCatalogFromNodes(nodes) {
+  let skuBase = null, skuCore = null, itemId = null;
+  for (const value of nodes) {
     skuBase ||= value.skuBase;
     skuCore ||= value.skuCore;
     itemId ||= value.item?.itemId ? String(value.item.itemId) : null;
-    for (const child of Object.values(value).slice(0, 100)) if (typeof child === 'object' || typeof child === 'string') queue.push(child);
+    if (skuBase && skuCore && itemId) break;
   }
   return { skuBase, skuCore, itemId };
+}
+
+export function extractCatalog(payload) {
+  return extractCatalogFromNodes(expandNodes(payload));
 }
 
 export function publicSpecs(specs) {

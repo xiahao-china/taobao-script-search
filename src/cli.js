@@ -1,5 +1,5 @@
 import { parseArgs } from 'node:util';
-import { readFile, writeFile, mkdir } from 'node:fs/promises';
+import { readFile, writeFile, rename, rm, mkdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { failure, TaobaoError } from './core/errors.js';
@@ -110,7 +110,10 @@ async function mtopCommand(operation, positionals, values, control) {
     if (!positionals[1] || !positionals[2]) {
       throw new TaobaoError('INVALID_ARGUMENT', 'shop-search 需要 <关键词> 和 <店铺URL或shopId> 两个参数。');
     }
-    const shopAdapter = new ShopSearchAdapter({ runtimeDir: values['runtime-dir'] || null });
+    const shopAdapter = new ShopSearchAdapter({
+      runtimeDir: values['runtime-dir'] || null,
+      ...(values.timeout ? { timeoutMs: Number(values.timeout) * 1000 } : {}),
+    });
     const pages = Number(values.pages || 1);
     return envelope('shop-search', await shopAdapter.shopSearch(positionals[1], positionals[2],
       { page: Number(values.page || 1), pages }, control.signal));
@@ -156,7 +159,16 @@ async function mtopCommand(operation, positionals, values, control) {
   }
   if (!values.file) throw new TaobaoError('INVALID_ARGUMENT', 'batch 必须指定 --file。');
   const input = await readBatchFile(values.file);
-  return envelope('batch', await adapter.batch(input, control.signal));
+  const outputPath = values.output ? resolve(values.output) : null;
+  const onProgress = outputPath ? async progress => {
+    await mkdir(dirname(outputPath), { recursive: true });
+    const body = JSON.stringify({ ok: false, operation: 'batch', partial: true, data: progress, error: null, meta: { provider: 'mtop-http', observedAt: new Date().toISOString() } }, null, 2) + '\n';
+    const temp = `${outputPath}.${process.pid}.${Date.now()}.tmp`;
+    await writeFile(temp, body);
+    try { await rename(temp, outputPath); }
+    catch { await writeFile(outputPath, body).catch(() => {}); await rm(temp, { force: true }).catch(() => {}); }
+  } : undefined;
+  return envelope('batch', await adapter.batch(input, control.signal, { onProgress }));
 }
 
 export async function main() {

@@ -10,11 +10,10 @@
 // - 搜索页/店铺页需要真实登录 Cookie（裸 HTTP 会命中 login 墙或 TMD 滑块）。
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
-import { setTimeout as delay } from 'node:timers/promises';
 import { TaobaoError, checkAbort } from '../../core/errors.js';
 import { runtimePaths } from '../../core/config.js';
 import { loadCookies, saveCookies, mergeSetCookies, cookieHeader } from '../../core/cookie-store.js';
-import { reserveSlot, appendRequestLog, appendOperationLog } from '../../core/mtop-client.js';
+import { reserveSlot, appendRequestLog, withOperationLog } from '../../core/mtop-client.js';
 import { parsePriceFontMap, decodeEntities } from '../../core/shop-font.js';
 import { gbkEncode } from '../../core/gbk.js';
 
@@ -128,25 +127,12 @@ export class ShopSearchAdapter {
     // 页面/搜索请求与 MTOP 网关共享全局限速占坑（跨进程令牌桶）。
     this.minIntervalMs = Number(process.env.TAOBAO_MTOP_MIN_INTERVAL_MS) || 5000;
     this.jitterMs = Number(process.env.TAOBAO_MTOP_JITTER_MS) || 5000;
+    this.fetch = options.fetch || globalThis.fetch;
   }
 
   // 操作日志包装器：与 MtopAdapter.withLog 同构（旁路，写失败不影响查询）。
   async withLog(operation, params, fn) {
-    const start = Date.now();
-    const base = { t: start, ts: new Date(start).toISOString(), operation, params };
-    try {
-      const result = await fn();
-      await appendOperationLog(this.options.runtimeDir, {
-        ...base, ok: true, ms: Date.now() - start, data: result?.data ?? null,
-      });
-      return result;
-    } catch (error) {
-      await appendOperationLog(this.options.runtimeDir, {
-        ...base, ok: false, ms: Date.now() - start,
-        error: { code: error.code || 'SHOP_SEARCH_ERROR', message: error.message },
-      });
-      throw error;
-    }
+    return withOperationLog(this.options.runtimeDir, operation, params, 'SHOP_SEARCH_ERROR', fn);
   }
 
   // 带 Cookie 的店铺域 GET：GBK 解码、Set-Cookie 回写、全局限速、请求日志。
@@ -162,13 +148,14 @@ export class ShopSearchAdapter {
     };
     const cookie = cookieHeader(store);
     if (cookie) headers.Cookie = cookie;
+    const timeoutSignal = AbortSignal.timeout(this.options.timeoutMs);
     const fetchSignal = signal
-      ? AbortSignal.any([AbortSignal.timeout(this.options.timeoutMs), signal])
-      : AbortSignal.timeout(this.options.timeoutMs);
+      ? (typeof AbortSignal.any === 'function' ? AbortSignal.any([timeoutSignal, signal]) : signal)
+      : timeoutSignal;
     const started = Date.now();
     let response;
     try {
-      response = await fetch(url, { headers, redirect: 'manual', signal: fetchSignal });
+      response = await this.fetch(url, { headers, redirect: 'manual', signal: fetchSignal });
     } catch (error) {
       if (signal?.aborted) throw new TaobaoError('CANCELLED', '任务已取消。');
       await appendRequestLog(this.options.runtimeDir, { t: started, ts: new Date(started).toISOString(), api: 'shop-page', ok: false, code: 'NETWORK_ERROR', url });
@@ -209,12 +196,17 @@ export class ShopSearchAdapter {
           '店铺页被淘宝风控拦截（TMD 滑块/验证码）。请在浏览器正常访问该店铺页一次后重试；HTTP 客户端不可解滑块。');
         if (isLoginWalled(page)) throw new TaobaoError('AUTH_REQUIRED',
           '店铺页返回登录跳转：登录 Cookie 失效。请在浏览器登录淘宝后执行 taobao sync-cookie。');
-        wid = extractWid(page);
+        const extractedWid = extractWid(page);
         fontUrl = extractFontUrl(page);
-        if (wid) {
+        if (extractedWid) {
+          wid = extractedWid;
           widSource = 'page';
           cache[shop.host] = { wid, host: shop.host, resolvedAt: new Date().toISOString() };
           await saveWidCache(this.options.runtimeDir, cache);
+        } else if (!wid) {
+          throw new TaobaoError('SHOP_SEARCH_ERROR', '店铺页未找到挂件号（wid），可能店铺结构已改版。');
+        } else {
+          widSource = 'cache-degraded';
         }
       } catch (error) {
         if (error.code === 'CANCELLED') throw error;
@@ -227,7 +219,7 @@ export class ShopSearchAdapter {
       let fontMap = null;
       if (fontUrl) {
         try {
-          const fontRes = await fetch(fontUrl, {
+          const fontRes = await this.fetch(fontUrl, {
             headers: { 'User-Agent': USER_AGENT },
             signal: AbortSignal.timeout(this.options.timeoutMs),
           });
@@ -265,7 +257,6 @@ export class ShopSearchAdapter {
         }
         items.push(...last.items);
         if (last.pages && pageNo >= last.pages) break;
-        await delay(this.minIntervalMs, undefined, { signal }).catch(() => { throw new TaobaoError('CANCELLED', '任务已取消。'); });
       }
 
       return {

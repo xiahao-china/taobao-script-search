@@ -1,4 +1,4 @@
-import { readFile, writeFile, mkdir, access } from 'node:fs/promises';
+import { readFile, writeFile, rename, rm, mkdir, access } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { projectRoot, runtimePaths } from './config.js';
 
@@ -63,7 +63,15 @@ export async function loadCookies(runtimeDir) {
 export async function saveCookies(store, runtimeDir) {
   const path = cookieStorePath(runtimeDir);
   await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, JSON.stringify(store, null, 2) + '\n');
+  const payload = JSON.stringify(store, null, 2) + '\n';
+  const temp = `${path}.${process.pid}.${Date.now()}.tmp`;
+  await writeFile(temp, payload);
+  try {
+    await rename(temp, path);
+  } catch {
+    await writeFile(path, payload).catch(() => {});
+    await rm(temp, { force: true }).catch(() => {});
+  }
 }
 
 function domainOk(domain) {

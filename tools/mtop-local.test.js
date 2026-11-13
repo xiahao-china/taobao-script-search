@@ -385,3 +385,88 @@ test('operation log: appendOperationLog 直写路径为 log/ 文件夹', async (
   assert.equal(line.operation, 'detail');
   assert.deepEqual(line.params, { itemId: '123' });
 });
+
+// ── 10. MtopClient mock fetch：预热、TOKEN 过期重签、RGV587 不重试、batch 增量进度
+import { MtopClient } from '../src/core/mtop-client.js';
+import { readdir } from 'node:fs/promises';
+
+function mockResponse(body, { status = 200, setCookies = [] } = {}) {
+  const text = typeof body === 'string' ? body : JSON.stringify(body);
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    headers: { getSetCookie: () => setCookies },
+    text: async () => text,
+    arrayBuffer: async () => Buffer.from(text),
+  };
+}
+
+test('MtopClient: warmSession 领取 cna/token，TOKEN_EXPIRED 自动重签一次', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'tb-client-'));
+  tempDirs.push(base);
+  const dir = join(base, '.runtime');
+  await saveCookies({ syncedAt: null, sync: null, cookies: { unb: { value: 'u1', domain: '.taobao.com', expires: -1 } } }, dir);
+  const calls = [];
+  const mockFetch = async url => {
+    const href = String(url);
+    calls.push(href);
+    if (href === 'https://www.taobao.com/') {
+      return mockResponse('<html></html>', { setCookies: ['cna=testcna123; Domain=.taobao.com; Path=/'] });
+    }
+    if (href.includes('mtop.common.gettimestamp')) {
+      return mockResponse({ ret: ['FAIL_SYS_TOKEN_EMPTY::令牌为空'] }, {
+        setCookies: ['_m_h5_tk=tok1_9999999999999; Domain=.taobao.com', '_m_h5_tk_enc=enc1; Domain=.taobao.com'],
+      });
+    }
+    if (calls.filter(u => u.includes('mtop.taobao.wsearch.appsearch')).length === 1) {
+      return mockResponse({ ret: ['FAIL_SYS_TOKEN_EXPIRED::令牌过期'] }, {
+        setCookies: ['_m_h5_tk=tok2_9999999999999; Domain=.taobao.com', '_m_h5_tk_enc=enc2; Domain=.taobao.com'],
+      });
+    }
+    return mockResponse({ ret: ['SUCCESS::调用成功'], data: { ok: true } });
+  };
+  const client = new MtopClient({ runtimeDir: dir, minIntervalMs: 0, jitterMs: 0, fetch: mockFetch });
+  const data = await client.request('mtop.taobao.wsearch.appsearch', '1.0', { q: 'test' });
+  assert.deepEqual(data, { ok: true });
+  assert.equal(calls.filter(u => u.includes('mtop.taobao.wsearch.appsearch')).length, 2, 'TOKEN_EXPIRED 后重签一次');
+  const files = await readdir(dir);
+  assert.ok(!files.some(name => name.endsWith('.tmp')), 'saveCookies 原子写入不应残留 .tmp 文件');
+});
+
+test('MtopClient: RGV587 风控拦截刻意不自动重试', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'tb-risk-'));
+  tempDirs.push(base);
+  const dir = join(base, '.runtime');
+  await saveCookies({
+    syncedAt: null, sync: null,
+    cookies: {
+      unb: { value: 'u1', domain: '.taobao.com', expires: -1 },
+      cna: { value: 'c1', domain: '.taobao.com', expires: -1 },
+      _m_h5_tk: { value: 'tok_999', domain: '.taobao.com', expires: -1 },
+    },
+  }, dir);
+  let count = 0;
+  const client = new MtopClient({
+    runtimeDir: dir, minIntervalMs: 0, jitterMs: 0,
+    fetch: async () => { count += 1; return mockResponse({ ret: ['FAIL_SYS_RGV587::被挤爆了'] }); },
+  });
+  await assert.rejects(client.request('mtop.taobao.wsearch.appsearch', '1.0', { q: 'x' }), error => error.code === 'RISK_CONTROL');
+  assert.equal(count, 1, '风控后绝不原地重试');
+});
+
+test('batch: onProgress 逐项回调可用于增量落盘', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'tb-batchprog-'));
+  tempDirs.push(base);
+  const adapter = new MtopAdapter({
+    client: stubClient([
+      { itemsArray: [{ id: '111111', title: 'A', price: '1.00' }] },
+      { itemsArray: [{ id: '222222', title: 'B', price: '2.00' }] },
+    ]),
+    runtimeDir: join(base, '.runtime'),
+  });
+  const snapshots = [];
+  await adapter.batch({ searches: ['a', 'b'] }, undefined, {
+    onProgress: async progress => snapshots.push(progress.total),
+  });
+  assert.deepEqual(snapshots, [1, 2]);
+});

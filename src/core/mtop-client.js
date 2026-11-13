@@ -75,6 +75,25 @@ export async function appendOperationLog(runtimeDir, entry) {
   } catch { /* 旁路，吞掉 */ }
 }
 
+// 公共操作日志包装器：MtopAdapter 与 ShopSearchAdapter 共用。
+export async function withOperationLog(runtimeDir, operation, params, fallbackCode, fn) {
+  const start = Date.now();
+  const base = { t: start, ts: new Date(start).toISOString(), operation, params };
+  try {
+    const result = await fn();
+    await appendOperationLog(runtimeDir, {
+      ...base, ok: true, ms: Date.now() - start, data: result?.data ?? null,
+    });
+    return result;
+  } catch (error) {
+    await appendOperationLog(runtimeDir, {
+      ...base, ok: false, ms: Date.now() - start,
+      error: { code: error.code || fallbackCode, message: error.message },
+    });
+    throw error;
+  }
+}
+
 // 跨进程令牌桶：请求前先占坑（把计划时刻写进文件），其他进程自动排队在其后。
 // 读-算-写存在窗口；用「写后复读校验」收敛竞争——发现被其他进程抢先写入
 // 更晚的计划时，以其为准顺延一次，避免双进程同时放行。
@@ -129,6 +148,7 @@ export class MtopClient {
       jitterMs: Number(process.env.TAOBAO_MTOP_JITTER_MS) || 5000,
       ...options,
     };
+    this.fetch = options.fetch || globalThis.fetch;
     this.sessionWarmed = false;
   }
 
@@ -142,7 +162,7 @@ export class MtopClient {
     this.sessionWarmed = true;
     try {
       if (!store.cookies.cna) {
-        const response = await fetch('https://www.taobao.com/', {
+        const response = await this.fetch('https://www.taobao.com/', {
           headers: { 'User-Agent': USER_AGENT, Accept: 'text/html,application/xhtml+xml' },
           redirect: 'manual',
           signal: AbortSignal.timeout(10000),
@@ -198,9 +218,10 @@ export class MtopClient {
         waitMs, ms: Date.now() - reqStart, ...outcome,
       });
     };
-    const fetchSignal = signal ? AbortSignal.any([AbortSignal.timeout(this.options.timeoutMs), signal]) : AbortSignal.timeout(this.options.timeoutMs);
+    const timeoutSignal = AbortSignal.timeout(this.options.timeoutMs);
+    const fetchSignal = signal ? (typeof AbortSignal.any === 'function' ? AbortSignal.any([timeoutSignal, signal]) : signal) : timeoutSignal;
     try {
-      response = await fetch(url, { headers, redirect: 'manual', signal: fetchSignal });
+      response = await this.fetch(url, { headers, redirect: 'manual', signal: fetchSignal });
     } catch (error) {
       if (signal?.aborted) {
         await logOutcome({ ok: false, code: 'CANCELLED' });

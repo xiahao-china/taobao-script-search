@@ -108,7 +108,7 @@ function parseCmap4(cmap, offset) {
   for (let seg = 0; seg < segCount; seg++) {
     const end = u16(cmap, endCodes + seg * 2);
     const start = u16(cmap, startCodes + seg * 2);
-    const delta = u16(cmap, idDeltas + seg * 2) | 0;
+    const delta = cmap.readInt16BE(idDeltas + seg * 2);
     const rangeOffset = u16(cmap, idRangeOffsets + seg * 2);
     if (start === 0xFFFF) continue;
     for (let cp = start; cp <= end; cp++) {
@@ -156,7 +156,8 @@ export function parsePriceFontMap(buffer) {
   const names = parsePostNames(post);
   const map = new Map();
   for (const [cp, glyphIndex] of cmap) {
-    const ch = NAME2CHAR[names[glyphIndex]];
+    const name = names[glyphIndex];
+    const ch = name && Object.hasOwn(NAME2CHAR, name) ? NAME2CHAR[name] : null;
     if (ch) map.set(cp, ch);
   }
   return map;

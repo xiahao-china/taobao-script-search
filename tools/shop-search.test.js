@@ -1,3 +1,6 @@
+import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { parseShopRef, extractWid, extractFontUrl, parseShopSearch, parseJsonp } from '../src/adapters/taobao/shop-search.js';
@@ -108,4 +111,41 @@ test('decodeEntities: 未知码点记 ?，混合实体位数保持', () => {
   const map = new Map([[65, 'A']]);
   assert.equal(decodeEntities('&#65;&#66;', map), 'A?');
   assert.equal(decodeEntities('&#65;', map), 'A');
+});
+
+import { ShopSearchAdapter } from '../src/adapters/taobao/shop-search.js';
+import { saveCookies } from '../src/core/cookie-store.js';
+
+test('ShopSearchAdapter: 页面改版导致 extractWid 返回 null 时保留已有缓存 wid，不覆盖为 null', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'tb-shopwid-'));
+  const dir = join(base, '.runtime');
+  await mkdir(dir, { recursive: true });
+  await saveCookies({
+    syncedAt: null, sync: null,
+    cookies: { unb: { value: 'u1', domain: '.taobao.com', expires: -1 }, _m_h5_tk: { value: 't_1', domain: '.taobao.com', expires: -1 } },
+  }, dir);
+  await writeFile(join(dir, 'shop-wid.json'), JSON.stringify({
+    'shop123456.taobao.com': { wid: '987654321', host: 'shop123456.taobao.com', resolvedAt: '2026-11-12T00:00:00Z' },
+  }));
+  const urls = [];
+  const mockFetch = async url => {
+    const href = String(url);
+    urls.push(href);
+    const body = !href.includes('/i/asynSearch.htm')
+      ? '<html><body>no widget id here</body></html>'
+      : `jsonp1(${JSON.stringify('<dl data-id="112233"><a class="item-name" href="//item.taobao.com/item.htm?id=112233">Demo</a></dl>')})`;
+    return {
+      ok: true, status: 200,
+      headers: { getSetCookie: () => [] },
+      arrayBuffer: async () => Buffer.from(body, 'utf8'),
+    };
+  };
+  const adapter = new ShopSearchAdapter({ runtimeDir: dir, fetch: mockFetch });
+  adapter.minIntervalMs = 0;
+  adapter.jitterMs = 0;
+  const res = await adapter.shopSearch('Demo', '123456');
+  assert.equal(res.data.shop.wid, '987654321');
+  assert.equal(res.meta.widSource, 'cache-degraded');
+  assert.ok(urls.some(u => u.includes('wid=987654321')), 'asynSearch 必须带上缓存 wid 而非 wid=null');
+  await rm(base, { recursive: true, force: true });
 });

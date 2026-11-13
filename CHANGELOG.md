@@ -5,10 +5,26 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.6.0] - 2026-11-13
 
 ### Added
 
+- In-shop item search command `shop-search <keyword> <shopURL|shopId>`:
+  pure-GET asynSearch channel (no MTOP signing) with shop wid extraction +
+  cache (`.runtime/shop-wid.json`), GBK keyword encoding (zero-dependency
+  encoder), and price de-obfuscation via the session-paired WOFF1
+  anti-scraping font (zero-dependency cmap/post parser). Prices come back
+  decoded when the font map pairs with the page (`priceText` /
+  `strikethroughText`), otherwise `null` + `priceUnknown=true` (hybrid
+  policy, never guessed). Nickname subdomains and numeric shopIds both work.
+- `batch` incremental output: with `--output`, partial results are atomically
+  rewritten (temp file + rename) after every completed entry as
+  `{ ok: false, partial: true, data: { results, … } }`, so an interrupted run
+  (Ctrl+C or a fatal AUTH/RISK abort) keeps the already-finished data on
+  disk; the final full envelope overwrites the file on completion.
+- Mock-fetch test coverage for the request pipeline: session warm-up,
+  `TOKEN_EXPIRED` re-sign, `RGV587` deliberate no-retry, batch progress
+  callback, and shop-search wid cache retention (31 tests total, up from 27).
 - `detail` now enriches the `store` block with shop-level data fetched via
   one chained `mtop.taobao.shop.impression.logo.get` request (using the
   `sellerId`/`shopId` found in the pcdetail seller node): `fansNum`
@@ -57,6 +73,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   different remedies. `RISK_CONTROL` is deliberately never auto-retried;
   `detail`'s API fallback also skips the second attempt on it (both H5 and PC
   endpoints share the same gateway fingerprint).
+- `--timeout` now also applies to `shop-search` (previously only MTOP
+  commands).
+- The operation-log wrapper is shared (`withOperationLog`) by
+  `MtopAdapter` and `ShopSearchAdapter`; both clients accept an injectable
+  `fetch` for testing, and `AbortSignal.any` usage degrades gracefully on
+  runtimes without it (per-request timeout still applies).
+
+### Fixed
+
+- shop-search pagination no longer adds a fixed 5 s `delay` between pages on
+  top of the cross-process token bucket (the extra wait was redundant — the
+  bucket already anchors to the last request time).
+- shop-search no longer overwrites a cached wid with `null` when a shop page
+  redesign hides the widget id: the cached wid is kept and used
+  (`meta.widSource = 'cache-degraded'`); when neither page nor cache yields a
+  wid, a clear `SHOP_SEARCH_ERROR` is raised instead of silently requesting
+  with `wid=null`.
+- `saveCookies` writes atomically (temp file + rename, same scheme as the
+  pacing slot file), so concurrent processes or an interrupted write can no
+  longer leave a half-written `mtop-cookies.json` behind.
+- Catalog extraction traverses the payload once instead of twice: the old
+  `extractCatalog` + `expand` double pass is merged into `expandNodes`
+  (index-advancing BFS, no `queue.shift()` O(n) shifts) +
+  `extractCatalogFromNodes`.
+- Font glyph-name lookup is prototype-chain safe (`Object.hasOwn`); cmap
+  format-4 `idDelta` is read as a signed 16-bit integer per the OpenType
+  spec (results unchanged, semantics corrected).
 
 ## [0.5.0] - 2026-11-03
 

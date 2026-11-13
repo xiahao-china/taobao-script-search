@@ -72,10 +72,13 @@ node "<skill目录>/scripts/taobao.mjs" search "关键词" --limit 10
 # priceText=null 且 priceUnknown=true（混合策略，不臆造）。昵称子域名
 # （如 youxin-electronic.taobao.com）与数值子域名均可。
 # meta.widSource：page=本次现取 / cache=缓存复用 / cache-degraded=页面被风控
-# 但用缓存 wid 降级搜索（此时价格必为 null）。
+# 或改版导致 wid 提取失败，用缓存 wid 降级搜索（此时价格必为 null）。
 
 # 批量（输入 JSON：{ "searches": [{"keyword": "...", "options": {"limit": 5}}], "products": [{"itemId": "...", "specs": [{"labels": ["..."], "qty": 10}]}] })
 ... batch --file <清单.json> [--output 结果.json]
+# 带 --output 时每完成一项即原子重写部分结果（ok:false + partial:true，
+# 含已完成 results 与 succeeded/failed 统计）——中途 Ctrl+C 或命中
+# AUTH/RISK 提前终止，已跑完的数据也在文件里；完整跑完后再被正常信封覆盖。
 
 # 购物记录（已买到的宝贝；服务端固定每页 15 条，tabCode 仅实测过 all）
 ... orders [--page 1] [--tab all] [--pages N] [--output 订单.json]

@@ -28,6 +28,13 @@ const help = `淘宝查询：纯 HTTP MTOP 直连（零浏览器依赖，即用�
       或数字 shopId。价格经字体反爬还原（划线价/现价），解不出时 priceText=null、
       priceUnknown=true。wid（店铺挂件号）自动提取并缓存于 .runtime/shop-wid.json；
       每次搜索先抓一次店铺页配对价格字体，全程走全局限速。
+  taobao cart-list
+      查看购物车当前内容（只读）。返回条目列表（cartId/itemId/规格/数量/实价/店铺）
+      与结算汇总（勾选数/合计）。登录态接口，走 ecode=1。
+  taobao cart-add <商品ID> [--sku-id <规格ID>] [--quantity 1]
+      加入购物车（写操作）。无规格商品不传 --sku-id；有规格商品用 specs 输出的
+      skuId。加购后自动回读购物车核对（entryFound=true 为确认成功）。PC 网页
+      端点实现，需 Cookie 含 _tb_token_（浏览器登录态自带）。
   taobao sync-cookie --cookie-string "a=b; c=d"   导入 Cookie（或 --stdin 从管道读入）
 首次使用：复制仓库根目录 cookie.example.json 为 cookie.json，把 cookie 字段替换成
 浏览器里 taobao.com 的完整 Cookie 字符串（获取方法见 README「配置 Cookie」）。
@@ -143,6 +150,13 @@ async function mtopCommand(operation, positionals, values, control) {
     }
     return envelope('orders', { data: { ...last.data, page, orders: merged }, meta: last.meta });
   }
+  if (operation === 'cart-list') return envelope('cart-list', await adapter.getCartList(control.signal));
+  if (operation === 'cart-add') {
+    if (!positionals[1]) throw new TaobaoError('INVALID_ARGUMENT', 'cart-add 需要 <商品ID> 参数（有规格商品另传 --sku-id）。');
+    const quantity = Number(values.quantity || 1);
+    return envelope('cart-add', await adapter.addToCart(positionals[1],
+      { skuId: values['sku-id'] || null, quantity }, control.signal));
+  }
   if (operation === 'detail') {
     const selections = [values['spec-id'], values.spec, values.labels, values.default].filter(value => value !== undefined);
     if (selections.length !== 1) throw new TaobaoError('INVALID_ARGUMENT', 'detail 须且只能提供 --spec-id、--spec、--labels、--default 之一。');
@@ -178,6 +192,7 @@ export async function main() {
       help: { type: 'boolean', short: 'h' }, limit: { type: 'string' }, page: { type: 'string' }, sort: { type: 'string' },
       pages: { type: 'string' }, tab: { type: 'string' },
       'spec-id': { type: 'string' }, spec: { type: 'string' }, labels: { type: 'string' }, default: { type: 'boolean' },
+      'sku-id': { type: 'string' }, quantity: { type: 'string' },
       reviews: { type: 'boolean' },
       file: { type: 'string' }, output: { type: 'string' },
       'cookie-string': { type: 'string' }, stdin: { type: 'boolean' },
@@ -191,8 +206,8 @@ export async function main() {
     let result;
     const control = { signal: controller.signal };
     if (operation === 'sync-cookie') result = await syncCookie(values);
-    else if (['search', 'specs', 'detail', 'batch', 'orders', 'shop-search'].includes(operation)) result = await mtopCommand(operation, positionals, values, control);
-    else throw new TaobaoError('INVALID_ARGUMENT', `未知命令：${operation}。可用：search / specs / detail / shop-search / batch / orders / sync-cookie。`);
+    else if (['search', 'specs', 'detail', 'batch', 'orders', 'shop-search', 'cart-list', 'cart-add'].includes(operation)) result = await mtopCommand(operation, positionals, values, control);
+    else throw new TaobaoError('INVALID_ARGUMENT', `未知命令：${operation}。可用：search / specs / detail / shop-search / batch / orders / cart-list / cart-add / sync-cookie。`);
     process.removeListener('SIGINT', cancel);
     const rendered = JSON.stringify(result, null, 2) + '\n';
     if (values.output) { const path = resolve(values.output); await mkdir(dirname(path), { recursive: true }); await writeFile(path, rendered); }

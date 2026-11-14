@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { buildMtopSpecs, recordPrice, buildStoreRecord, MtopAdapter } from '../src/adapters/taobao/mtop.js';
 import { resolveSpec, skuPrice } from '../src/adapters/taobao/specs.js';
 import { extractOrders, assertOrdersPayload } from '../src/adapters/taobao/orders.js';
+import { extractCart, assertCartPayload } from '../src/adapters/taobao/cart.js';
 import { mergeSetCookies, mergeCookieString, cookieHeader, cookieSummary, loadCookies, saveCookies, rootCookiePath } from '../src/core/cookie-store.js';
 import { parsePrice } from '../src/core/money.js';
 import { normalizeUrl } from '../src/core/url.js';
@@ -469,4 +470,118 @@ test('batch: onProgress 逐项回调可用于增量落盘', async () => {
     onProgress: async progress => snapshots.push(progress.total),
   });
   assert.deepEqual(snapshots, [1, 2]);
+});
+
+// ── cart: query.bag 5.0 组件字典解析（fixture 摘自 2026-11-13 真实响应）──
+test('cart: 组件字典 → 条目/店铺/结算汇总，skuId=0 无规格商品归一为 null', () => {
+  const payload = {
+    container: [{ name: 'cart_item' }],
+    data: {
+      'item_6708844442194': {
+        id: '6708844442194', tag: 'item', type: 'dinamicx$cartitem',
+        bundleId: 's_2204783677373',
+        fields: {
+          bizCode: 'ali.china.taobao.enterpriseservice', pic: '//gw.alicdn.com/imgextra/x.jpg',
+          title: 'SWPA4018S4R7MT 顺络贴片功率电感',
+          settlement: '605076509553_1_4846287504517_null_0_null_null_6708844442194_null_null_null',
+          shopId: '474791141',
+          sku: { areaId: '210711', skuId: '4846287504517', skuInvalid: false, title: 'SWPA4018S4R7MT（4.7UH）' },
+          toBuy: 'taobao', quantity: '1', cartId: '6708844442194',
+          bundleId: 's_2204783677373',
+          pay: { afterPromPrice: 11, nowTitle: '￥0.11', total: 11 },
+          isChecked: 'false', itemId: '605076509553', canCheck: true,
+          outerUrl: '//item.taobao.com/item.htm?id=605076509553&from=cart&skuId=4846287504517&',
+        },
+      },
+      'item_6709263508685': {
+        id: '6709263508685', tag: 'item', type: 'dinamicx$cartitem',
+        fields: {
+          pic: '//gw.alicdn.com/imgextra/y.jpg', title: '贴片三极管 SI2308 A8SHB SOT-23',
+          sku: { skuId: '0' }, toBuy: 'taobao', quantity: '3', cartId: '6709263508685',
+          bundleId: 's_2658592015',
+          pay: { afterPromPrice: 12, nowTitle: '￥0.04', total: 12 },
+          isChecked: 'true', itemId: '533810161160', canCheck: true,
+        },
+      },
+      'shop_s_2204783677373': {
+        id: 's_2204783677373', tag: 'shop', type: 'dinamicx$cartshop',
+        fields: { title: '深圳市华源芯电子有限公司 电子元器件配单', valid: true, bizArgs: { shopId: 2204783677373 } },
+      },
+      'shop_s_2658592015': {
+        id: 's_2658592015', tag: 'shop', type: 'dinamicx$cartshop',
+        fields: { title: '深圳市优信电子科技有限公司', valid: true, bizArgs: { shopId: 2658592015 } },
+      },
+      'submit_1': {
+        id: '1', tag: 'submit', position: 'footer', type: 'native$submit',
+        fields: {
+          quantity: 2,
+          submit: { status: 'normal', title: '结算(1)' },
+          pay: { price: 4, priceTitle: '￥0.04', totalDiscount: '￥0', totalTitle: '合计:' },
+        },
+      },
+      'header_1': { id: '1', tag: 'header', type: 'native$header', fields: { title: '购物车' } },
+      'group_i_x': { id: 'i_x', tag: 'group', type: 'block$groupBlock', fields: {} },
+    },
+  };
+  const cart = extractCart(payload);
+  assert.equal(cart.items.length, 2);
+  assert.equal(cart.pageTitle, '购物车');
+  const first = cart.items[0];
+  assert.equal(first.itemId, '605076509553');
+  assert.equal(first.cartId, '6708844442194');
+  assert.equal(first.sku.skuId, '4846287504517');
+  assert.equal(first.sku.title, 'SWPA4018S4R7MT（4.7UH）');
+  assert.equal(first.quantity, 1);
+  assert.equal(first.priceText, '0.11', 'pay.nowTitle 文案剥离为纯数字');
+  assert.equal(first.priceCents, 11);
+  assert.equal(first.shopName, '深圳市华源芯电子有限公司 电子元器件配单', 'bundleId 关联店铺组件');
+  assert.equal(first.shopId, '2204783677373');
+  assert.equal(first.url, 'https://item.taobao.com/item.htm?id=605076509553&from=cart&skuId=4846287504517&');
+  assert.equal(first.isChecked, false);
+  const second = cart.items[1];
+  assert.equal(second.sku, null, 'skuId=0 无规格商品 sku 归一为 null');
+  assert.equal(second.shopName, '深圳市优信电子科技有限公司');
+  assert.equal(second.isChecked, true);
+  assert.equal(second.quantity, 3);
+  assert.deepEqual(cart.shops.map(shop => shop.shopId).sort(), ['2204783677373', '2658592015']);
+  assert.deepEqual(cart.summary, {
+    itemCount: 2, checkedCount: 2, totalPriceText: '0.04', totalDiscountText: '0', submitTitle: '结算(1)',
+  });
+});
+
+test('cart: 空购物车（无 item 组件）→ items 为空数组，不抛 NO_RESULTS（空车是合法状态）', () => {
+  const payload = {
+    data: {
+      'header_1': { id: '1', tag: 'header', type: 'native$header', fields: { title: '购物车' } },
+      'submit_1': { id: '1', tag: 'submit', type: 'native$submit', fields: { quantity: 0, submit: { status: 'disable', title: '结算(0)' }, pay: { priceTitle: '￥0', totalDiscount: '￥0' } } },
+    },
+  };
+  const cart = extractCart(payload);
+  assert.deepEqual(cart.items, []);
+  assert.equal(cart.summary.itemCount, 0);
+  assert.equal(cart.summary.checkedCount, 0);
+});
+
+test('cart: assertCartPayload 对结构缺失（data 为空对象）报 NO_RESULTS', () => {
+  assert.throws(() => assertCartPayload({}), error => error.code === 'NO_RESULTS');
+});
+
+// ── cart-add: 加购响应解析（fixture 摘自 2026-11-14 真实探针响应）──
+import { parseAddCartResult } from '../src/adapters/taobao/cart.js';
+
+test('cart-add: TB.Detail.CartResult 提取 cartQuantity，非 JSON 容错', () => {
+  const body = '\n\t    TB.Detail.CartResult = {\n    "cartQuantity": "21",\n    "cartPrice": ""\n    }\n\t';
+  const parsed = parseAddCartResult(body);
+  assert.deepEqual(parsed, { cartQuantity: '21', cartPrice: '' });
+  assert.equal(parseAddCartResult('<html>login required</html>'), null);
+  assert.equal(parseAddCartResult('TB.Detail.CartResult = { broken'), null);
+  assert.equal(parseAddCartResult(''), null);
+});
+
+test('cart-add: addToCart 参数校验（quantity 范围 / skuId 格式）', async () => {
+  const adapter = new MtopAdapter({ client: stubClient([]) });
+  await assert.rejects(adapter.addToCart('123', { quantity: 0 }), error => error.code === 'INVALID_ARGUMENT');
+  await assert.rejects(adapter.addToCart('123', { quantity: 1000 }), error => error.code === 'INVALID_ARGUMENT');
+  await assert.rejects(adapter.addToCart('123', { quantity: 1.5 }), error => error.code === 'INVALID_ARGUMENT');
+  await assert.rejects(adapter.addToCart('123', { skuId: 'abc' }), error => error.code === 'INVALID_ARGUMENT');
 });

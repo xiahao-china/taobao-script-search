@@ -1,9 +1,11 @@
-import { TaobaoError, requireId } from '../../core/errors.js';
+import { TaobaoError, requireId, checkAbort } from '../../core/errors.js';
 import { parsePrice } from '../../core/money.js';
-import { MtopClient, withOperationLog } from '../../core/mtop-client.js';
+import { MtopClient, withOperationLog, reserveSlot, appendRequestLog } from '../../core/mtop-client.js';
+import { loadCookies, saveCookies, mergeSetCookies, cookieHeader } from '../../core/cookie-store.js';
 import { normalizeUrl } from '../../core/url.js';
 import { expandNodes, extractCatalogFromNodes, resolveSpec, publicSpecs, skuPrice } from './specs.js';
 import { assertOrdersPayload } from './orders.js';
+import { assertCartPayload, parseAddCartResult } from './cart.js';
 
 const ORDER_TAB_PATTERN = /^[a-z_]{2,20}$/;
 // 订单接口挂在「已买到的宝贝」页面上下文；网关要求登录请求标记（ecode=1）。
@@ -14,6 +16,17 @@ const ORDER_REQUEST = {
 const ORDER_API = ['mtop.taobao.order.queryboughtlistV2', '1.0'];
 // 评价计数接口：只要汇总字段，rateList 内容丢弃。
 const RATE_API = ['mtop.taobao.rate.detaillist.get', '4.0'];
+// 购物车内容接口：挂在 H5 购物车页面上下文，同样要求登录请求标记（ecode=1）。
+const CART_API = ['mtop.trade.query.bag', '5.0'];
+const CART_REQUEST = {
+  extraParams: { ecode: '1', AntiCreep: 'true', AntiFlood: 'true', LoginRequest: 'true', ttid: '##h5' },
+  referer: 'https://main.m.taobao.com/cart/index.html',
+};
+// 加购走 PC 网页端点（非 MTOP）：cart.taobao.com/add_cart_item.htm，GBK 响应。
+// 2026-11-14 实测：最小参数 item_id + quantity + _tb_token_ 即成功（无需 2016 年
+// 资料里的 opp/ct/nekot），响应为 GBK HTML 内嵌 TB.Detail.CartResult JSON。
+const CART_ADD_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
+const CART_ADD_GBK = new TextDecoder('gbk');
 
 const SORTS = { default: '', 'price-asc': 'price-asc', 'price-desc': 'price-desc', sales: 'sale-desc' };
 const clean = value => String(value || '').replace(/\s+/g, ' ').trim();
@@ -353,6 +366,117 @@ export class MtopAdapter {
           page: params.page, tab: params.tab, orders, pagination,
         },
         meta: { provider: 'mtop-http-orders', observedAt: new Date().toISOString() },
+      };
+    });
+  }
+
+  // 购物车内容（只读）。返回条目列表 + 店铺列表 + 结算汇总；
+  // 与 orders 同为登录态接口，走 ecode=1 请求标记。
+  async getCartList(signal) {
+    return this.withLog('cart-list', {}, async () => {
+      const payload = await this.client.request(CART_API[0], CART_API[1], {
+        isPage: true, extStatus: 0, netType: 0,
+        exParams: JSON.stringify({ mergeCombo: true, version: '1.1.1', globalSell: 1 }),
+      }, { signal, ...CART_REQUEST });
+      const cart = assertCartPayload(payload);
+      return {
+        data: cart,
+        meta: { provider: 'mtop-http-cart', observedAt: new Date().toISOString() },
+      };
+    });
+  }
+
+  // 加入购物车（写操作）：PC 网页端点一次请求 + 回读 query.bag 一次核对。
+  // 前提：Cookie 须含 _tb_token_（PC 登录 CSRF 令牌，浏览器登录态自带）。
+  // 带规格商品须传 skuId；skuId 路径有开源参照（clawhub/QGB）但未实测，
+  // 失败时会如实报错并保留服务端响应原文供排查。
+  async addToCart(itemId, { skuId = null, quantity = 1 } = {}, signal) {
+    requireId(itemId);
+    if (!Number.isInteger(quantity) || quantity < 1 || quantity > 999) {
+      throw new TaobaoError('INVALID_ARGUMENT', 'quantity 须为 1–999 的整数。');
+    }
+    if (skuId != null && !/^\d+$/.test(String(skuId))) {
+      throw new TaobaoError('INVALID_ARGUMENT', 'skuId 须为纯数字（specs 命令输出的 skuId）。');
+    }
+    return this.withLog('cart-add', { itemId, skuId: skuId ?? null, quantity }, async () => {
+      const store = await loadCookies(this.options.runtimeDir);
+      const token = store.cookies._tb_token_?.value;
+      if (!token) {
+        throw new TaobaoError('AUTH_REQUIRED',
+          'Cookie 缺少 _tb_token_（PC 登录 CSRF 令牌），无法加购。请从浏览器重新复制完整 Cookie 并更新 cookie.json。');
+      }
+      checkAbort(signal);
+      const waitStart = Date.now();
+      await reserveSlot(this.options.runtimeDir, this.options.minIntervalMs, this.options.jitterMs, signal);
+      const params = new URLSearchParams({
+        item_id: String(itemId),
+        quantity: String(quantity),
+        _tb_token_: token,
+        ...(skuId ? { sku_id: String(skuId) } : {}),
+      });
+      const url = `https://cart.taobao.com/add_cart_item.htm?${params}`;
+      // timeoutMs 挂在 MtopClient.options 上（默认 15000），适配器自身 options 没有。
+      const timeoutSignal = AbortSignal.timeout(this.client.options.timeoutMs);
+      const fetchSignal = signal
+        ? (typeof AbortSignal.any === 'function' ? AbortSignal.any([timeoutSignal, signal]) : signal)
+        : timeoutSignal;
+      const started = Date.now();
+      let response;
+      try {
+        response = await fetch(url, {
+          headers: {
+            'User-Agent': CART_ADD_UA,
+            Accept: 'text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8',
+            Referer: `https://item.taobao.com/item.htm?id=${itemId}`,
+            Cookie: cookieHeader(store),
+          },
+          redirect: 'manual',
+          signal: fetchSignal,
+        });
+      } catch (error) {
+        if (signal?.aborted) throw new TaobaoError('CANCELLED', '任务已取消。');
+        await appendRequestLog(this.options.runtimeDir, { t: started, ts: new Date(started).toISOString(), api: 'cart-add', ok: false, code: 'NETWORK_ERROR', url });
+        throw new TaobaoError('NETWORK_ERROR', `加购请求失败：${error.message}`);
+      }
+      mergeSetCookies(store, response.headers.getSetCookie());
+      await saveCookies(store, this.options.runtimeDir);
+      const body = CART_ADD_GBK.decode(Buffer.from(await response.arrayBuffer()));
+      await appendRequestLog(this.options.runtimeDir, {
+        t: started, ts: new Date(started).toISOString(), api: 'cart-add', ok: response.ok,
+        http: response.status, waitMs: Date.now() - waitStart, ms: Date.now() - started, url,
+      });
+      if (/_____tmd_____/.test(body)) {
+        throw new TaobaoError('RISK_CONTROL', '加购被淘宝风控拦截（TMD 滑块）。等待几分钟并在浏览器正常访问一次 taobao.com 后重试。');
+      }
+      if (/login/i.test(body) && !parseAddCartResult(body)) {
+        throw new TaobaoError('AUTH_REQUIRED', '加购返回登录页：登录 Cookie 失效。请在浏览器登录后重新 sync-cookie。');
+      }
+      const result = parseAddCartResult(body);
+      if (!result) {
+        throw new TaobaoError('CART_ADD_ERROR',
+          `加购响应无法解析（HTTP ${response.status}）。商品可能已下架、限购或端点结构变化。`,
+          { bodyHead: body.slice(0, 400) });
+      }
+      // 回读核对：加购响应的 cartQuantity 是网关全量计数（含失效条目），不可比数量；
+      // 以 query.bag 里出现 itemId+skuId 条目为准。
+      const cart = await this.getCartList(signal);
+      const entry = (cart.data.items || []).find(item => item.itemId === String(itemId)
+        && (skuId ? item.sku?.skuId === String(skuId) : item.sku === null || item.sku === undefined));
+      return {
+        data: {
+          itemId: String(itemId),
+          skuId: skuId ?? null,
+          quantity,
+          added: true,
+          cartQuantity: Number.parseInt(result.cartQuantity, 10) || null,
+          entryFound: Boolean(entry),
+          entry: entry ?? null,
+        },
+        meta: {
+          provider: 'web-cart-add', observedAt: new Date().toISOString(),
+          verification: entry ? 'query-bag-confirmed' : 'not-in-current-page',
+          note: entry ? undefined : '加购请求已成功（网关返回 cartQuantity），但 query.bag 当前页未出现该条目——购物车可能分页或该商品待生效，请人工核对。',
+        },
       };
     });
   }

@@ -5,7 +5,7 @@ import { loadCookies, saveCookies, mergeSetCookies, cookieHeader } from '../../c
 import { normalizeUrl } from '../../core/url.js';
 import { expandNodes, extractCatalogFromNodes, resolveSpec, publicSpecs, skuPrice } from './specs.js';
 import { assertOrdersPayload } from './orders.js';
-import { assertCartPayload, parseAddCartResult } from './cart.js';
+import { assertCartPayload, parseAddCartResult, buildRemoveUpdateData } from './cart.js';
 
 const ORDER_TAB_PATTERN = /^[a-z_]{2,20}$/;
 // 订单接口挂在「已买到的宝贝」页面上下文；网关要求登录请求标记（ecode=1）。
@@ -18,6 +18,8 @@ const ORDER_API = ['mtop.taobao.order.queryboughtlistV2', '1.0'];
 const RATE_API = ['mtop.taobao.rate.detaillist.get', '4.0'];
 // 购物车内容接口：挂在 H5 购物车页面上下文，同样要求登录请求标记（ecode=1）。
 const CART_API = ['mtop.trade.query.bag', '5.0'];
+// update.bag 4.0：购物车统一写接口（删除/改数量/勾选等），dinamicx 链接协议，POST。
+const UPDATE_BAG_API = ['mtop.trade.update.bag', '4.0'];
 const CART_REQUEST = {
   extraParams: { ecode: '1', AntiCreep: 'true', AntiFlood: 'true', LoginRequest: 'true', ttid: '##h5' },
   referer: 'https://main.m.taobao.com/cart/index.html',
@@ -476,6 +478,53 @@ export class MtopAdapter {
           provider: 'web-cart-add', observedAt: new Date().toISOString(),
           verification: entry ? 'query-bag-confirmed' : 'not-in-current-page',
           note: entry ? undefined : '加购请求已成功（网关返回 cartQuantity），但 query.bag 当前页未出现该条目——购物车可能分页或该商品待生效，请人工核对。',
+        },
+      };
+    });
+  }
+
+  // 删除购物车条目（写操作）：mtop.trade.update.bag 4.0（dinamicx 链接协议）。
+  // 流程 = query.bag 拉新树（取 linkage 签名与组件）→ 构造删除 payload POST
+  // update.bag → 回读 query.bag 核对条目消失。共 3 次请求，全程走限速。
+  // 删除不可逆；契约详见 cart.js buildRemoveUpdateData 注释（官方 bundle 逆向
+  // + 2026-11-14 真实探针验证）。
+  async removeFromCart(cartId, signal) {
+    requireId(String(cartId), 'cartId');
+    return this.withLog('cart-remove', { cartId }, async () => {
+      const payload = await this.client.request(CART_API[0], CART_API[1], {
+        isPage: true, extStatus: 0, netType: 0,
+        exParams: JSON.stringify({ mergeCombo: true, version: '1.1.1', globalSell: 1 }),
+      }, { signal, ...CART_REQUEST });
+      const keyname = `item_${cartId}`;
+      const trigger = (payload?.data ?? {})[keyname];
+      if (!trigger || trigger.tag !== 'item') {
+        throw new TaobaoError('NO_RESULTS',
+          `购物车中不存在条目 ${cartId}（可能已删除或 cartId 失效）。可用 cart-list 查看当前条目及其 cartId。`);
+      }
+      const updateData = buildRemoveUpdateData(payload, cartId);
+      await this.client.request(UPDATE_BAG_API[0], UPDATE_BAG_API[1], updateData, {
+        signal, ...CART_REQUEST, method: 'POST',
+      });
+      // 回读核对：update.bag 响应结构与 query.bag 不同，条目删除与否以回读为准。
+      const verify = await this.client.request(CART_API[0], CART_API[1], {
+        isPage: true, extStatus: 0, netType: 0,
+        exParams: JSON.stringify({ mergeCombo: true, version: '1.1.1', globalSell: 1 }),
+      }, { signal, ...CART_REQUEST });
+      const after = verify?.data ?? {};
+      const entryGone = !(after[keyname] && after[keyname].tag === 'item');
+      return {
+        data: {
+          cartId: String(cartId),
+          itemId: trigger.fields?.itemId != null ? String(trigger.fields.itemId) : null,
+          title: typeof trigger.fields?.title === 'string' ? trigger.fields.title : null,
+          removed: true,
+          entryGone,
+          remainingCount: Object.values(after).filter(c => c?.tag === 'item').length,
+        },
+        meta: {
+          provider: 'mtop-http-cart-remove', observedAt: new Date().toISOString(),
+          verification: entryGone ? 'query-bag-confirmed' : 'entry-still-present',
+          note: entryGone ? undefined : 'update.bag 已返回成功但回读仍见该条目——可能是分页/生效延迟，请人工核对。',
         },
       };
     });

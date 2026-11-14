@@ -35,6 +35,10 @@ const help = `淘宝查询：纯 HTTP MTOP 直连（零浏览器依赖，即用�
       加入购物车（写操作）。无规格商品不传 --sku-id；有规格商品用 specs 输出的
       skuId。加购后自动回读购物车核对（entryFound=true 为确认成功）。PC 网页
       端点实现，需 Cookie 含 _tb_token_（浏览器登录态自带）。
+  taobao cart-remove <cartId>
+      从购物车删除条目（写操作，不可逆）。cartId 用 cart-list 输出的条目 ID。
+      走 mtop.trade.update.bag 4.0，删除后自动回读核对（entryGone=true 为确认
+      成功）。共 3 次请求，全程走全局限速。
   taobao sync-cookie --cookie-string "a=b; c=d"   导入 Cookie（或 --stdin 从管道读入）
 首次使用：复制仓库根目录 cookie.example.json 为 cookie.json，把 cookie 字段替换成
 浏览器里 taobao.com 的完整 Cookie 字符串（获取方法见 README「配置 Cookie」）。
@@ -157,6 +161,10 @@ async function mtopCommand(operation, positionals, values, control) {
     return envelope('cart-add', await adapter.addToCart(positionals[1],
       { skuId: values['sku-id'] || null, quantity }, control.signal));
   }
+  if (operation === 'cart-remove') {
+    if (!positionals[1]) throw new TaobaoError('INVALID_ARGUMENT', 'cart-remove 需要 <cartId> 参数（cart-list 输出的条目 ID）。');
+    return envelope('cart-remove', await adapter.removeFromCart(positionals[1], control.signal));
+  }
   if (operation === 'detail') {
     const selections = [values['spec-id'], values.spec, values.labels, values.default].filter(value => value !== undefined);
     if (selections.length !== 1) throw new TaobaoError('INVALID_ARGUMENT', 'detail 须且只能提供 --spec-id、--spec、--labels、--default 之一。');
@@ -206,8 +214,8 @@ export async function main() {
     let result;
     const control = { signal: controller.signal };
     if (operation === 'sync-cookie') result = await syncCookie(values);
-    else if (['search', 'specs', 'detail', 'batch', 'orders', 'shop-search', 'cart-list', 'cart-add'].includes(operation)) result = await mtopCommand(operation, positionals, values, control);
-    else throw new TaobaoError('INVALID_ARGUMENT', `未知命令：${operation}。可用：search / specs / detail / shop-search / batch / orders / cart-list / cart-add / sync-cookie。`);
+    else if (['search', 'specs', 'detail', 'batch', 'orders', 'shop-search', 'cart-list', 'cart-add', 'cart-remove'].includes(operation)) result = await mtopCommand(operation, positionals, values, control);
+    else throw new TaobaoError('INVALID_ARGUMENT', `未知命令：${operation}。可用：search / specs / detail / shop-search / batch / orders / cart-list / cart-add / cart-remove / sync-cookie。`);
     process.removeListener('SIGINT', cancel);
     const rendered = JSON.stringify(result, null, 2) + '\n';
     if (values.output) { const path = resolve(values.output); await mkdir(dirname(path), { recursive: true }); await writeFile(path, rendered); }

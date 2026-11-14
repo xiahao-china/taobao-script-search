@@ -178,7 +178,7 @@ export class MtopClient {
     }
   }
 
-  async request(api, version, data, { retry = 0, signal, extraParams = null, referer = null, probe = false } = {}) {
+  async request(api, version, data, { retry = 0, signal, extraParams = null, referer = null, probe = false, method = 'GET' } = {}) {
     checkAbort(signal);
     let store = await loadCookies(this.options.runtimeDir);
     if (!probe && (!store.cookies.cna || !store.cookies._m_h5_tk)) {
@@ -200,7 +200,6 @@ export class MtopClient {
       jsv: JSV, appKey: APP_KEY, t: timestamp, sign, api, v: version,
       type: 'originaljson', dataType: 'json', H5Request: 'true', data: dataJson,
     };
-    url.search = new URLSearchParams({ ...baseParams, ...(extraParams || {}) }).toString();
     const headers = {
       Accept: 'application/json',
       'User-Agent': USER_AGENT,
@@ -208,6 +207,16 @@ export class MtopClient {
       Origin: referer ? new URL(referer).origin : 'https://h5.m.taobao.com',
     };
     if (header) headers.Cookie = header;
+    const allParams = { ...baseParams, ...(extraParams || {}) };
+    // POST 通道（购物车 update.bag 等大 payload 写接口）：参数走 form body，
+    // 签名算法与 GET 完全一致（dataJson 参与摘要），仅传输位置不同。
+    let requestBody = null;
+    if (String(method).toUpperCase() === 'POST') {
+      requestBody = new URLSearchParams(allParams).toString();
+      headers['Content-Type'] = 'application/x-www-form-urlencoded';
+    } else {
+      url.search = new URLSearchParams(allParams).toString();
+    }
     let response;
     const reqStart = Date.now();
     // 请求日志：每次真实 HTTP 尝试一行（含重签重试、失败、取消），供风控/异常复盘。
@@ -221,7 +230,13 @@ export class MtopClient {
     const timeoutSignal = AbortSignal.timeout(this.options.timeoutMs);
     const fetchSignal = signal ? (typeof AbortSignal.any === 'function' ? AbortSignal.any([timeoutSignal, signal]) : signal) : timeoutSignal;
     try {
-      response = await this.fetch(url, { headers, redirect: 'manual', signal: fetchSignal });
+      response = await this.fetch(url, {
+        method: requestBody ? 'POST' : 'GET',
+        headers,
+        body: requestBody,
+        redirect: 'manual',
+        signal: fetchSignal,
+      });
     } catch (error) {
       if (signal?.aborted) {
         await logOutcome({ ok: false, code: 'CANCELLED' });
@@ -239,7 +254,7 @@ export class MtopClient {
     // 令牌过期：网关已通过 Set-Cookie 下发新 token，重签一次即可，不视为风控。
     if (codes.some(code => code.includes('TOKEN')) && newToken && newToken !== token && retry < 1) {
       await logOutcome({ ok: false, code: 'TOKEN_EXPIRED_RETRIED', http: response.status });
-      return this.request(api, version, data, { retry: retry + 1, signal, extraParams, referer });
+      return this.request(api, version, data, { retry: retry + 1, signal, extraParams, referer, method });
     }
     if (codes.some(code => RISK_PATTERN.test(code))) {
       // 刻意不自动重试：风控是按请求指纹拦的，原地重试只会加重封禁。

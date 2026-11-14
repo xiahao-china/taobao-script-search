@@ -585,3 +585,54 @@ test('cart-add: addToCart 参数校验（quantity 范围 / skuId 格式）', asy
   await assert.rejects(adapter.addToCart('123', { quantity: 1.5 }), error => error.code === 'INVALID_ARGUMENT');
   await assert.rejects(adapter.addToCart('123', { skuId: 'abc' }), error => error.code === 'INVALID_ARGUMENT');
 });
+
+// ── cart-remove: update.bag 删除 payload 构造（契约自官方 bundle 逆向 + 2026-11-14 探针验证）──
+import { buildRemoveUpdateData } from '../src/adapters/taobao/cart.js';
+
+const removeFixture = () => ({
+  data: {
+    'item_123': {
+      tag: 'item', type: 'dinamicx$cartitem', id: 'item_123',
+      fields: { itemId: '999', cartId: '123', title: 'T' },
+      events: { deleteClick: [{ tag: 'cartAdjustOperate', type: 'cartAdjustOperate', fields: { ext: {}, operateType: 'delete', operateItems: [] } }] },
+    },
+    'global_1': { tag: 'global', id: 'global_1', fields: {} },
+  },
+  hierarchy: { structure: { global_1: ['item_123'] } },
+  linkage: {
+    input: ['global_1'],
+    common: { queryParams: '^^$$x', compress: true, validateParams: '^^$$y', submitParams: '^^$$z' },
+    signature: 'sig123',
+  },
+});
+
+test('cart-remove: buildRemoveUpdateData 双层 JSON 包装 + operateItems 合并', () => {
+  const wrapped = buildRemoveUpdateData(removeFixture(), '123');
+  assert.ok(typeof wrapped.params === 'string', '顶层应为 { params: <json 字符串> }');
+  const inner = JSON.parse(wrapped.params);
+  assert.equal(inner.operatorEvent, 'deleteClick.cartAdjustOperate');
+  assert.equal(inner.operator, 'item_123');
+  // data/hierarchy/linkage 是字符串化的 JSON（requestAdaptor 各顶层对象值先 stringify）
+  assert.equal(typeof inner.data, 'string');
+  assert.equal(typeof inner.hierarchy, 'string');
+  assert.equal(typeof inner.linkage, 'string');
+  const data = JSON.parse(inner.data);
+  // 触发组件事件字段被合并：operateItems 填入 keyname
+  assert.deepEqual(data['item_123'].events.deleteClick[0].fields.operateItems, ['item_123']);
+  // linkage.input 组件随 payload 回传
+  assert.ok(data['global_1'], 'data 应包含 linkage.input 的 global_1 组件');
+  const linkage = JSON.parse(inner.linkage);
+  assert.equal(linkage.signature, 'sig123');
+  assert.deepEqual(Object.keys(linkage.common).sort(), ['compress', 'queryParams', 'validateParams']);
+  const hierarchy = JSON.parse(inner.hierarchy);
+  assert.deepEqual(hierarchy.structure, { global_1: ['item_123'] });
+});
+
+test('cart-remove: 条目不存在报 NO_RESULTS，缺 linkage 签名报 MTOP_ERROR', () => {
+  assert.throws(() => buildRemoveUpdateData(removeFixture(), '456'),
+    error => error.code === 'NO_RESULTS');
+  const broken = removeFixture();
+  delete broken.linkage.signature;
+  assert.throws(() => buildRemoveUpdateData(broken, '123'),
+    error => error.code === 'MTOP_ERROR');
+});

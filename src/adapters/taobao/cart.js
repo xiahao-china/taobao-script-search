@@ -112,3 +112,49 @@ export function parseAddCartResult(text) {
     return parsed && typeof parsed === 'object' ? parsed : null;
   } catch { return null; }
 }
+
+// ── 删除购物车条目（mtop.trade.update.bag 4.0）────────────────────────────
+// 契约来自 H5 购物车官方 bundle（g.alicdn.com/dinamic/h5-tb-cart/5.0.66）逆向，
+// 并已于 2026-11-14 真实删除探针验证（tools/probe-remove-cart.mjs）：
+// 1. dinamicx 链接协议：query.bag 响应携带 linkage{input,common,signature}，
+//    update.bag 回传「触发组件(事件字段合并变更) + linkage.input 组件 + hierarchy
+//    + linkage.common 三字段 + signature」，整体再包一层 { params: <json 字符串> }
+//    （requestAdaptor 双层 JSON；顶层对象值先各自 stringify 成字符串）。
+// 2. 删除动作：operatorEvent = "deleteClick." + 事件配置 type（恒为 cartAdjustOperate），
+//    operator = 触发组件 keyname（item_<cartId>），
+//    变更 = events.deleteClick[0].fields.operateItems 填入 [keyname]。
+// 3. 成功响应顶层为 { global, hierarchy, linkage, reload }（结构与 query.bag 不同，
+//    条目是否删除以回读 query.bag 为准）。
+export function buildRemoveUpdateData(payload, cartId) {
+  const components = payload?.data ?? payload ?? {};
+  const keyname = `item_${cartId}`;
+  const trigger = components[keyname];
+  if (!trigger || trigger.tag !== 'item') {
+    throw new TaobaoError('NO_RESULTS', `购物车中不存在条目 ${cartId}（可能已删除或 cartId 失效；可用 cart-list 查看当前条目）。`);
+  }
+  const linkage = payload?.linkage;
+  if (!linkage?.signature) {
+    throw new TaobaoError('MTOP_ERROR', 'query.bag 响应缺 linkage 签名信息，购物车写协议可能已变化，操作中止。');
+  }
+  const mutated = JSON.parse(JSON.stringify(trigger));
+  const delEvent = mutated.events?.deleteClick?.[0];
+  if (!delEvent || delEvent.type !== 'cartAdjustOperate') {
+    throw new TaobaoError('MTOP_ERROR', '触发组件缺 cartAdjustOperate deleteClick 事件，购物车写协议可能已变化，操作中止。');
+  }
+  delEvent.fields.operateItems = [keyname];
+  const common = linkage.common ?? {};
+  const inner = {
+    operatorEvent: `deleteClick.${delEvent.type}`,
+    operator: keyname,
+    data: JSON.stringify({
+      ...Object.fromEntries((linkage.input ?? []).map(k => [k, components[k]]).filter(([, v]) => v)),
+      [keyname]: mutated,
+    }),
+    hierarchy: JSON.stringify({ structure: payload?.hierarchy?.structure ?? {} }),
+    linkage: JSON.stringify({
+      common: { queryParams: common.queryParams, compress: common.compress, validateParams: common.validateParams },
+      signature: linkage.signature,
+    }),
+  };
+  return { params: JSON.stringify(inner) };
+}

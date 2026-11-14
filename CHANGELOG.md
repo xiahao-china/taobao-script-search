@@ -5,6 +5,41 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - 2026-11-14
+
+### Added
+
+- Cart content command `cart-list` (read-only): queries the current shopping
+  cart via `mtop.trade.query.bag 5.0` on the H5 gateway (login-required
+  request, `ecode=1`, referer `main.m.taobao.com/cart/index.html`). The
+  response's component dictionary is flattened into `items[]` (cartId /
+  itemId / sku{skuId,title} with no-spec items normalized to null / quantity /
+  priceText from the pay copy / pic / url / shopName+shopId joined through the
+  shop component / isChecked / canCheck), `shops[]`, and a `summary` block
+  (itemCount / checkedCount / totalPriceText / totalDiscountText / submitTitle).
+  An empty cart is a valid state (shell components present, zero items) and is
+  reported as such; only a missing component shell surfaces as `NO_RESULTS`.
+- `tools/probe-cart.mjs` one-off probe: live-verified the query.bag 5.0
+  request envelope and response structure before implementation.
+- Add-to-cart command `cart-add <itemId> [--sku-id <id>] [--quantity N]`
+  (write operation): adds an item via the PC web endpoint
+  `cart.taobao.com/add_cart_item.htm` (not MTOP) with the minimal parameter
+  set `item_id` + `quantity` + `_tb_token_` (CSRF token from the login
+  cookies; the legacy `opp`/`ct`/`nekot` params from 2016-era writeups are
+  not needed — live-verified 2026-11-14). The GBK HTML response embeds
+  `TB.Detail.CartResult` JSON whose `cartQuantity` is the gateway-side
+  full-cart count (includes stale/hidden entries — never compare it with
+  `cart-list` item count). After the add, the command re-reads
+  `query.bag` and confirms the entry (`entryFound=true`,
+  `meta.verification=query-bag-confirmed`); re-adding the same item/sku
+  increments the existing cart entry's quantity instead of duplicating it.
+  Requires `_tb_token_` in the cookies (present in browser-login cookie
+  exports). The `--sku-id` path has open-source references (clawhub
+  @mayf3/add-to-cart, QGB/QPSU `taobao_trade.py`) but is NOT live-tested —
+  first use on a sku item should be followed by a manual `cart-list` check.
+  `tools/probe-add-cart.mjs` one-off probe documents the endpoint contract
+  (36 tests total, up from 31).
+
 ## [0.6.0] - 2026-11-13
 
 ### Added

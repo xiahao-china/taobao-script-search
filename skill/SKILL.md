@@ -1,6 +1,6 @@
 ---
 name: taobao-product-search
-description: 淘宝商品查询工具（纯 HTTP MTOP 直连）。当用户需要搜索淘宝商品、查商品规格/SKU、按规格核价（真实价格而非引流价）、查店铺信誉（天猫标识/DSR 评分/店铺标签）、查评价数量与默认好评占比、批量比价或配单、查购物记录（已买到的宝贝/订单列表）、在某家店铺内搜商品（店内搜索/搜本店）时使用。触发词：淘宝搜一下、查淘宝商品、淘宝价格、SKU 核价、店铺评分、天猫还是淘宝、评价多少、批量查商品、商品比价、我的订单、购物记录、店内搜索、这家店里搜。返回结构化 JSON，含标题/价格/库存/店铺/SKU 树/订单明细。
+description: 淘宝商品查询工具（纯 HTTP MTOP 直连）。当用户需要搜索淘宝商品、查商品规格/SKU、按规格核价（真实价格而非引流价）、查店铺信誉（天猫标识/DSR 评分/店铺标签）、查评价数量与默认好评占比、批量比价或配单、查购物记录（已买到的宝贝/订单列表）、查购物车当前内容（购物车里有什么/加购核对）、加入购物车（加购指定商品）、在某家店铺内搜商品（店内搜索/搜本店）时使用。触发词：淘宝搜一下、查淘宝商品、淘宝价格、SKU 核价、店铺评分、天猫还是淘宝、评价多少、批量查商品、商品比价、我的订单、购物记录、购物车、加购了什么、加入购物车、帮我加购、店内搜索、这家店里搜。返回结构化 JSON，含标题/价格/库存/店铺/SKU 树/订单明细/购物车条目。
 agent_created: true
 ---
 
@@ -8,7 +8,7 @@ agent_created: true
 
 ## Overview
 
-通过捆绑的 CLI（零 npm 依赖，Node >= 22）直连淘宝 MTOP H5 网关查询商品数据与购物记录。六个命令：`search`（关键词搜索）、`specs`（规格树）、`detail`（按 SKU 核价）、`shop-search`（店铺内搜索）、`batch`（批量）、`orders`（已买到的宝贝）。输出统一 `{ ok, operation, data, error, meta }` JSON 信封。
+通过捆绑的 CLI（零 npm 依赖，Node >= 22）直连淘宝 MTOP H5 网关查询商品数据与购物记录。八个命令：`search`（关键词搜索）、`specs`（规格树）、`detail`（按 SKU 核价）、`shop-search`（店铺内搜索）、`batch`（批量）、`orders`（已买到的宝贝）、`cart-list`（购物车当前内容）、`cart-add`（加入购物车）。输出统一 `{ ok, operation, data, error, meta }` JSON 信封。
 
 ## 关键约束（务必遵守）
 
@@ -18,7 +18,7 @@ agent_created: true
 - **订单号是字符串**：17 位订单号超 JS number 精度，解析一律用对象键；输出保持字符串。
 - **失败处理**：`AUTH_REQUIRED` = Cookie 过期/未配置，提示用户从浏览器重新复制并更新 cookie 文件；`RISK_CONTROL` = 风控拦截（RGV587，请求指纹/频率问题，与登录态无关），**刻意不自动重试**（重试加重封禁）——等待几分钟、在浏览器正常访问一次 taobao.com 后再试；`ITEM_UNAVAILABLE` = 商品下架。batch 命中 AUTH/RISK 会立即终止剩余条目（`data.aborted`），处理后重跑。
 - **请求日志**：`.runtime/log/mtop-request-log.jsonl` 每行一次真实请求（时间戳/接口/结果/限速等待 waitMs/耗时 ms），查节奏、复盘风控触发点用它；超 5MB 自动轮转同文件夹 `.old`，可整文件删除不影响功能。
-- **操作日志**：`.runtime/log/mtop-operation-log.jsonl` 每行一次业务查询（时间戳/查询类型 search·specs·detail·orders·review-summary·shop-search·batch/入参/完整业务结果或错误码）。想回溯「当时搜了什么关键词、返回了哪些商品、详情价格多少」看这份；两份日志同文件夹同轮转规则。
+- **操作日志**：`.runtime/log/mtop-operation-log.jsonl` 每行一次业务查询（时间戳/查询类型 search·specs·detail·orders·review-summary·shop-search·cart-list·cart-add·batch/入参/完整业务结果或错误码）。想回溯「当时搜了什么关键词、返回了哪些商品、详情价格多少、加购了什么」看这份；两份日志同文件夹同轮转规则。
 
 ## 调用方式
 
@@ -83,6 +83,23 @@ node "<skill目录>/scripts/taobao.mjs" search "关键词" --limit 10
 # 购物记录（已买到的宝贝；服务端固定每页 15 条，tabCode 仅实测过 all）
 ... orders [--page 1] [--tab all] [--pages N] [--output 订单.json]
 # 返回 orders[]: orderId（全精度字符串）/shopName/status/paid/total/discount/items[{title,skuText,quantity,price,auctionId,pic}]
+
+# 购物车当前内容（只读，1 次请求；mtop.trade.query.bag 5.0，登录态接口）
+... cart-list
+# 返回 items[]: cartId（购物车条目 ID，全精度字符串）/itemId/title/sku{skuId,title}
+# （无规格商品为 null）/quantity/priceText（实价文案剥离，非列表引流价）/pic/url/
+# shopName/shopId/isChecked/canCheck；shops[]（店铺名/shopId）；summary{itemCount,
+# checkedCount,totalPriceText,totalDiscountText,submitTitle}。
+# 购物车价格是加购时点价，可能与当前实价不同——报价前仍应以 detail 核价为准。
+
+# 加入购物车（写操作；PC 网页端点 cart.taobao.com/add_cart_item.htm + 回读核对）
+... cart-add <商品ID> [--sku-id <规格ID>] [--quantity 1]
+# 无规格商品不传 --sku-id；有规格商品传 specs 输出的 skuId（⚠️ sku 路径有开源
+# 参照但未实测，首次对 sku 商品加购建议加购后 cart-list 人工复核）。
+# 加购后自动回读 query.bag 核对：entryFound=true 为确认成功（meta.verification=
+# query-bag-confirmed）；quantity 为本次加入数量。重复加购同商品=数量累加。
+# 前提：Cookie 须含 _tb_token_（浏览器登录态自带）；响应 cartQuantity 是网关
+# 全量计数（含失效条目），与 cart-list 条目数不一致是常态，不要互相换算。
 ```
 
 （上表 `...` 代表 `node "<skill路径>/scripts/taobao.mjs"`）
@@ -104,6 +121,12 @@ node "<skill目录>/scripts/taobao.mjs" search "关键词" --limit 10
 
 1. `orders --pages N --output orders.json` 拉取近 N 页（约 15×N 条，按需估算页数）
 2. 订单级字段（paid）只聚合一次；按月/按店/按金额区间统计前先按 orderId 去重
+
+### 典型工作流：加购核对
+
+1. `cart-list` 看购物车现有内容（避免重复加购/核对价格与规格）
+2. 用户确认要加购的商品后，`cart-add <商品ID> [--sku-id <规格ID>]` 加购——命令自带回读核对，报告 entryFound 与购物车内数量；加购是写操作，只做用户明确指定的商品，绝不批量或顺手加购
+3. 重复加购同商品 = 数量累加（不产生重复条目）；要改数量/删除请让用户在购物车里手动处理
 
 ## 资源
 

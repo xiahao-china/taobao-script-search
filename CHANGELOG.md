@@ -5,6 +5,28 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] - 2026-11-14
+
+### Added
+
+- Cart item removal command `cart-remove <cartId>` (write operation): deletes
+  a cart entry via `mtop.trade.update.bag 4.0` — the official H5 cart
+  companion write API to `query.bag 5.0` — implementing the dinamicx linkage
+  protocol (query.bag pulls the component tree + linkage signature, the
+  trigger item's `events.deleteClick` gets `operateItems` merged, the payload
+  is double-JSON-wrapped as `{params: <json>}` per the official
+  `requestAdaptor`, then POSTed and verified by re-reading query.bag with
+  `entryGone=true` / `meta.verification=query-bag-confirmed`). Contract was
+  reverse-engineered from the official cart bundle
+  (`g.alicdn.com/dinamic/h5-tb-cart/5.0.66/index.min.js`) and live-verified
+  2026-11-14 with a probe (`tools/probe-remove-cart.mjs`) on a real test
+  entry; 3 requests total, all through the global rate limiter. The operator
+  event suffix is `deleteClick.cartAdjustOperate` (the event descriptor's
+  type, same for item rows and the settlement bar). Deletion is irreversible
+  — the skill workflow requires per-entry user confirmation. `MtopClient`
+  gained a POST channel (form-body params, identical MD5 signing); test
+  count 36 -> 38.
+
 ## [0.7.0] - 2026-11-14
 
 ### Added

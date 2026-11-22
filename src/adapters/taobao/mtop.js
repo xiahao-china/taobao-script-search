@@ -189,29 +189,39 @@ export class MtopAdapter {
     });
   }
 
-  // 详情接口双保险：H5 getdetail 优先，拿不到 skuBase/skuCore 时退回 PC 接口。
-  // 接口级失败（MTOP_ERROR/NETWORK_ERROR）同样降级到备用接口；取消与鉴权错误直接上抛。
+  // 详情接口双保险：PC pcdetail 优先（实测含完整 skuBase/skuCore/店铺信誉/shopUrl，
+  // H5 getdetail 6.0 实测 360/360 缺 skuBase 均回退到 pcdetail，反转顺序可少打一半请求并降低风控暴露），
+  // 拿不到 skuBase/skuCore 时再降级 H5 接口。
+  // 接口级失败（MTOP_ERROR/NETWORK_ERROR）同样降级到备用接口；取消、鉴权与风控错误直接上抛。
   // 商品标题/店铺名与规格数据可能分布在不同层级，同一次响应里一并深搜提取。
-  // 注意：H5 路径的响应里没有店铺信誉节点，store 恒为 null；store 数据只在
-  // pcdetail 路径产出（README「店铺信誉」一节的 store:null 情形即由此而来）。
+  // 注意：若降级到 H5 路径，响应里没有店铺信誉节点，store 为 null。
   async fetchCatalog(itemId, signal) {
     const attempts = [
-      ['mtop.taobao.detail.getdetail', '6.0', { id: itemId, exParams: JSON.stringify({ id: itemId }) }],
       ['mtop.taobao.pcdetail.data.get', '1.0', {
         id: itemId, detail_v: '3.3.2',
         exParams: JSON.stringify({ id: itemId, domain: 'https://item.taobao.com', path_name: '/item.htm' }),
       }],
+      ['mtop.taobao.detail.getdetail', '6.0', { id: itemId, exParams: JSON.stringify({ id: itemId }) }],
     ];
     let lastError = null;
-    for (const [api, version, data] of attempts) {
+    for (let idx = 0; idx < attempts.length; idx++) {
+      const [api, version, data] = attempts[idx];
+      const nextApi = attempts[idx + 1]?.[0] ?? null;
       let payload;
       try {
         payload = await this.client.request(api, version, data, { signal });
       } catch (error) {
         // 取消/登录态失效/风控拦截都不值得换接口再试：前两者与接口无关，
-        // RGV587 风控按请求指纹拦，H5 与 PC 接口走同一个网关指纹。
+        // RGV587 风控按请求指纹拦，PC 与 H5 接口走同一个网关指纹。
         if (error.code === 'CANCELLED' || error.code === 'AUTH_REQUIRED' || error.code === 'RISK_CONTROL') throw error;
         lastError = error;
+        if (nextApi) {
+          const now = Date.now();
+          await appendRequestLog(this.options.runtimeDir, {
+            t: now, ts: new Date(now).toISOString(), api: 'catalog-fallback',
+            itemId, fromApi: api, toApi: nextApi, ok: false, reason: error.code || 'MTOP_ERROR',
+          });
+        }
         continue;
       }
       const nodes = expandNodes(payload, { maxNodes: 2000, maxChildren: 200 });
@@ -250,6 +260,7 @@ export class MtopAdapter {
         }
         return {
           ...catalog,
+          sourceApi: api,
           // shopUrl 与 sellerId/shopId 相互独立（C 店常只有 shopUrl 无数值 ID）：
           // 两者皆无时保持 null，有其一即产出记录。
           shop: (shopIds || shopUrl) ? { ...(shopIds ?? {}), ...(shopUrl ? { shopUrl } : {}) } : null,
@@ -260,6 +271,13 @@ export class MtopAdapter {
           },
           store: buildStoreRecord(sellerNode, storeNode),
         };
+      }
+      if (nextApi) {
+        const now = Date.now();
+        await appendRequestLog(this.options.runtimeDir, {
+          t: now, ts: new Date(now).toISOString(), api: 'catalog-fallback',
+          itemId, fromApi: api, toApi: nextApi, ok: false, reason: 'missing-sku',
+        });
       }
     }
     // 两次尝试都没解析出规格数据：明确按失效商品报错，不返回空壳 catalog。
@@ -372,14 +390,20 @@ export class MtopAdapter {
     });
   }
 
+  // 购物车原始组件树（内部公共请求）：getCartList / addToCart 回读 / removeFromCart 共用，
+  // 避免写操作内部回读时在操作日志里多写一条嵌套的 cart-list 记录。
+  async fetchCartPayload(signal) {
+    return this.client.request(CART_API[0], CART_API[1], {
+      isPage: true, extStatus: 0, netType: 0,
+      exParams: JSON.stringify({ mergeCombo: true, version: '1.1.1', globalSell: 1 }),
+    }, { signal, ...CART_REQUEST });
+  }
+
   // 购物车内容（只读）。返回条目列表 + 店铺列表 + 结算汇总；
   // 与 orders 同为登录态接口，走 ecode=1 请求标记。
   async getCartList(signal) {
     return this.withLog('cart-list', {}, async () => {
-      const payload = await this.client.request(CART_API[0], CART_API[1], {
-        isPage: true, extStatus: 0, netType: 0,
-        exParams: JSON.stringify({ mergeCombo: true, version: '1.1.1', globalSell: 1 }),
-      }, { signal, ...CART_REQUEST });
+      const payload = await this.fetchCartPayload(signal);
       const cart = assertCartPayload(payload);
       return {
         data: cart,
@@ -408,8 +432,14 @@ export class MtopAdapter {
           'Cookie 缺少 _tb_token_（PC 登录 CSRF 令牌），无法加购。请从浏览器重新复制完整 Cookie 并更新 cookie.json。');
       }
       checkAbort(signal);
+      // 限速与超时配置均以 MtopClient.options 为准（默认 5000+5000ms / 15000ms），
+      // 缺省再回退 adapter.options，避免默认调用时 minIntervalMs 为 undefined 击穿全局限速。
+      const minIntervalMs = this.client.options?.minIntervalMs ?? this.options.minIntervalMs ?? 5000;
+      const jitterMs = this.client.options?.jitterMs ?? this.options.jitterMs ?? 5000;
       const waitStart = Date.now();
-      await reserveSlot(this.options.runtimeDir, this.options.minIntervalMs, this.options.jitterMs, signal);
+      await reserveSlot(this.options.runtimeDir, minIntervalMs, jitterMs, signal);
+      const waitMs = Date.now() - waitStart;
+      checkAbort(signal);
       const params = new URLSearchParams({
         item_id: String(itemId),
         quantity: String(quantity),
@@ -417,15 +447,27 @@ export class MtopAdapter {
         ...(skuId ? { sku_id: String(skuId) } : {}),
       });
       const url = `https://cart.taobao.com/add_cart_item.htm?${params}`;
-      // timeoutMs 挂在 MtopClient.options 上（默认 15000），适配器自身 options 没有。
-      const timeoutSignal = AbortSignal.timeout(this.client.options.timeoutMs);
+      // 日志脱敏：绝不把 _tb_token_ 写入请求日志。
+      const logParams = new URLSearchParams(params);
+      logParams.set('_tb_token_', 'REDACTED');
+      const logUrl = `https://cart.taobao.com/add_cart_item.htm?${logParams}`;
+      const timeoutMs = this.client.options?.timeoutMs ?? this.options.timeoutMs ?? 15000;
+      const timeoutSignal = AbortSignal.timeout(timeoutMs);
       const fetchSignal = signal
         ? (typeof AbortSignal.any === 'function' ? AbortSignal.any([timeoutSignal, signal]) : signal)
         : timeoutSignal;
+      const fetchFn = this.client.fetch || globalThis.fetch;
       const started = Date.now();
+      const logAttempt = async outcome => {
+        await appendRequestLog(this.options.runtimeDir, {
+          t: started, ts: new Date(started).toISOString(), api: 'cart-add',
+          itemId: String(itemId), skuId: skuId ? String(skuId) : null, quantity,
+          waitMs, ms: Date.now() - started, url: logUrl, ...outcome,
+        });
+      };
       let response;
       try {
-        response = await fetch(url, {
+        response = await fetchFn(url, {
           headers: {
             'User-Agent': CART_ADD_UA,
             Accept: 'text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8',
@@ -436,33 +478,36 @@ export class MtopAdapter {
           signal: fetchSignal,
         });
       } catch (error) {
-        if (signal?.aborted) throw new TaobaoError('CANCELLED', '任务已取消。');
-        await appendRequestLog(this.options.runtimeDir, { t: started, ts: new Date(started).toISOString(), api: 'cart-add', ok: false, code: 'NETWORK_ERROR', url });
+        if (signal?.aborted) {
+          await logAttempt({ ok: false, code: 'CANCELLED' });
+          throw new TaobaoError('CANCELLED', '任务已取消。');
+        }
+        await logAttempt({ ok: false, code: 'NETWORK_ERROR' });
         throw new TaobaoError('NETWORK_ERROR', `加购请求失败：${error.message}`);
       }
       mergeSetCookies(store, response.headers.getSetCookie());
       await saveCookies(store, this.options.runtimeDir);
       const body = CART_ADD_GBK.decode(Buffer.from(await response.arrayBuffer()));
-      await appendRequestLog(this.options.runtimeDir, {
-        t: started, ts: new Date(started).toISOString(), api: 'cart-add', ok: response.ok,
-        http: response.status, waitMs: Date.now() - waitStart, ms: Date.now() - started, url,
-      });
       if (/_____tmd_____/.test(body)) {
+        await logAttempt({ ok: false, code: 'RISK_CONTROL', http: response.status });
         throw new TaobaoError('RISK_CONTROL', '加购被淘宝风控拦截（TMD 滑块）。等待几分钟并在浏览器正常访问一次 taobao.com 后重试。');
       }
-      if (/login/i.test(body) && !parseAddCartResult(body)) {
+      const result = parseAddCartResult(body);
+      if (/login/i.test(body) && !result) {
+        await logAttempt({ ok: false, code: 'AUTH_REQUIRED', http: response.status });
         throw new TaobaoError('AUTH_REQUIRED', '加购返回登录页：登录 Cookie 失效。请在浏览器登录后重新 sync-cookie。');
       }
-      const result = parseAddCartResult(body);
       if (!result) {
+        await logAttempt({ ok: false, code: 'CART_ADD_ERROR', http: response.status });
         throw new TaobaoError('CART_ADD_ERROR',
           `加购响应无法解析（HTTP ${response.status}）。商品可能已下架、限购或端点结构变化。`,
           { bodyHead: body.slice(0, 400) });
       }
+      await logAttempt({ ok: true, http: response.status });
       // 回读核对：加购响应的 cartQuantity 是网关全量计数（含失效条目），不可比数量；
       // 以 query.bag 里出现 itemId+skuId 条目为准。
-      const cart = await this.getCartList(signal);
-      const entry = (cart.data.items || []).find(item => item.itemId === String(itemId)
+      const cart = assertCartPayload(await this.fetchCartPayload(signal));
+      const entry = (cart.items || []).find(item => item.itemId === String(itemId)
         && (skuId ? item.sku?.skuId === String(skuId) : item.sku === null || item.sku === undefined));
       return {
         data: {
@@ -491,10 +536,7 @@ export class MtopAdapter {
   async removeFromCart(cartId, signal) {
     requireId(String(cartId), 'cartId');
     return this.withLog('cart-remove', { cartId }, async () => {
-      const payload = await this.client.request(CART_API[0], CART_API[1], {
-        isPage: true, extStatus: 0, netType: 0,
-        exParams: JSON.stringify({ mergeCombo: true, version: '1.1.1', globalSell: 1 }),
-      }, { signal, ...CART_REQUEST });
+      const payload = await this.fetchCartPayload(signal);
       const keyname = `item_${cartId}`;
       const trigger = (payload?.data ?? {})[keyname];
       if (!trigger || trigger.tag !== 'item') {
@@ -506,10 +548,7 @@ export class MtopAdapter {
         signal, ...CART_REQUEST, method: 'POST',
       });
       // 回读核对：update.bag 响应结构与 query.bag 不同，条目删除与否以回读为准。
-      const verify = await this.client.request(CART_API[0], CART_API[1], {
-        isPage: true, extStatus: 0, netType: 0,
-        exParams: JSON.stringify({ mergeCombo: true, version: '1.1.1', globalSell: 1 }),
-      }, { signal, ...CART_REQUEST });
+      const verify = await this.fetchCartPayload(signal);
       const after = verify?.data ?? {};
       const entryGone = !(after[keyname] && after[keyname].tag === 'item');
       return {

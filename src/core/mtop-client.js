@@ -4,7 +4,7 @@ import { dirname, join, basename } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { TaobaoError, checkAbort } from './errors.js';
 import { runtimePaths } from './config.js';
-import { loadCookies, saveCookies, cookieHeader, mergeSetCookies } from './cookie-store.js';
+import { loadCookies, saveCookies, cookieHeader, cookieSummary, mergeSetCookies } from './cookie-store.js';
 import { parseBody } from './json-body.js';
 
 export { parseBody };
@@ -94,9 +94,15 @@ export async function withOperationLog(runtimeDir, operation, params, fallbackCo
   }
 }
 
+const parseEnvMs = (raw, fallback) => {
+  if (raw === undefined || raw === '') return fallback;
+  const num = Number(raw);
+  return Number.isFinite(num) && num >= 0 ? num : fallback;
+};
+
 // 跨进程令牌桶：请求前先占坑（把计划时刻写进文件），其他进程自动排队在其后。
 // 读-算-写存在窗口；用「写后复读校验」收敛竞争——发现被其他进程抢先写入
-// 更晚的计划时，以其为准顺延一次，避免双进程同时放行。
+// 更晚的计划时，继续循环并顺延在对方之后（加完整间隔），避免双进程同时放行。
 // 写入用「临时文件 + rename 原子替换」：writeFile 先截断再写，并发读会读到
 // 半截 JSON，readLastAt 捕获后返回 0，导致限速被击穿。
 // 导出供非网关 HTTP 通道复用（店铺内搜索的 *.taobao.com 页面请求同享全局限速）。
@@ -109,7 +115,7 @@ export async function reserveSlot(runtimeDir, minIntervalMs, jitterMs, signal) {
     try { return Number(JSON.parse(await readFile(path, 'utf8')).lastAt) || 0; } catch { return 0; }
   };
   const writePlanned = async planned => {
-    const temp = `${path}.${process.pid}.${Date.now()}.tmp`;
+    const temp = `${path}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 6)}.tmp`;
     await writeFile(temp, JSON.stringify({ lastAt: planned }));
     try { await rename(temp, path); }
     catch {
@@ -125,9 +131,10 @@ export async function reserveSlot(runtimeDir, minIntervalMs, jitterMs, signal) {
     planned = lastAt + minIntervalMs + Math.floor(Math.random() * Math.max(0, jitterMs));
     if (planned <= now) {
       await writePlanned(now);
-      // 复读竞争校验同样适用于「无需等待」分支：被抢先写入更晚计划时照常排队。
+      // 复读竞争校验同样适用于「无需等待」分支：若被其他进程抢先写入更晚时刻，
+      // 必须重算并排在其后（加完整 minInterval + jitter），不可原地撞车放行。
       const current = await readLastAt();
-      if (current > now) { planned = current; break; }
+      if (current > now) continue;
       return;
     }
     await writePlanned(planned);
@@ -136,7 +143,13 @@ export async function reserveSlot(runtimeDir, minIntervalMs, jitterMs, signal) {
   }
   checkAbort(signal);
   const wait = planned - Date.now();
-  if (wait > 0) await delay(wait, undefined, { signal });
+  if (wait > 0) {
+    try { await delay(wait, undefined, { signal }); }
+    catch (error) {
+      if (signal?.aborted) throw new TaobaoError('CANCELLED', '任务已取消。');
+      throw error;
+    }
+  }
 }
 
 export class MtopClient {
@@ -144,8 +157,8 @@ export class MtopClient {
     this.options = {
       runtimeDir: null,
       timeoutMs: 15000,
-      minIntervalMs: Number(process.env.TAOBAO_MTOP_MIN_INTERVAL_MS) || 5000,
-      jitterMs: Number(process.env.TAOBAO_MTOP_JITTER_MS) || 5000,
+      minIntervalMs: parseEnvMs(process.env.TAOBAO_MTOP_MIN_INTERVAL_MS, 5000),
+      jitterMs: parseEnvMs(process.env.TAOBAO_MTOP_JITTER_MS, 5000),
       ...options,
     };
     this.fetch = options.fetch || globalThis.fetch;
@@ -153,7 +166,7 @@ export class MtopClient {
   }
 
   // 会话预热（进程内至多一次，裸会话特征是风控重点关照对象）：
-  // 1) 缺 cna（设备指纹 Cookie）时先访问一次主页领取，之后保持稳定不换；
+  // 1) 缺 cna（设备指纹 Cookie）时先访问一次主页领取，之后写入 .runtime 保持跨进程稳定不换；
   // 2) 缺签名令牌时先用零成本哑请求向网关换取 _m_h5_tk——避免业务请求带空
   //    令牌硬闯、白白吃一次 TOKEN_EXPIRED 并累积坏指纹。预热是尽力而为：
   //    失败静默放行，后续请求仍走原有的 TOKEN 重签链路兜底。
@@ -162,13 +175,31 @@ export class MtopClient {
     this.sessionWarmed = true;
     try {
       if (!store.cookies.cna) {
-        const response = await this.fetch('https://www.taobao.com/', {
-          headers: { 'User-Agent': USER_AGENT, Accept: 'text/html,application/xhtml+xml' },
-          redirect: 'manual',
-          signal: AbortSignal.timeout(10000),
-        });
-        mergeSetCookies(store, response.headers.getSetCookie());
-        await saveCookies(store, this.options.runtimeDir);
+        const started = Date.now();
+        const timeoutSignal = AbortSignal.timeout(10000);
+        const fetchSignal = signal
+          ? (typeof AbortSignal.any === 'function' ? AbortSignal.any([timeoutSignal, signal]) : signal)
+          : timeoutSignal;
+        try {
+          const response = await this.fetch('https://www.taobao.com/', {
+            headers: { 'User-Agent': USER_AGENT, Accept: 'text/html,application/xhtml+xml' },
+            redirect: 'manual',
+            signal: fetchSignal,
+          });
+          mergeSetCookies(store, response.headers.getSetCookie());
+          await saveCookies(store, this.options.runtimeDir);
+          await appendRequestLog(this.options.runtimeDir, {
+            t: started, ts: new Date(started).toISOString(), api: 'warm-cna', probe: true,
+            ok: Boolean(store.cookies.cna), http: response.status, ms: Date.now() - started,
+            gotCna: Boolean(store.cookies.cna),
+          });
+        } catch (error) {
+          if (signal?.aborted) throw new TaobaoError('CANCELLED', '任务已取消。');
+          await appendRequestLog(this.options.runtimeDir, {
+            t: started, ts: new Date(started).toISOString(), api: 'warm-cna', probe: true,
+            ok: false, code: 'NETWORK_ERROR', ms: Date.now() - started,
+          });
+        }
       }
       if (!store.cookies._m_h5_tk) {
         await this.request(TOKEN_PROBE[0], TOKEN_PROBE[1], {}, { signal, probe: true });
@@ -187,6 +218,7 @@ export class MtopClient {
       store = await loadCookies(this.options.runtimeDir);
     }
     const header = cookieHeader(store);
+    const summary = cookieSummary(store);
     const waitStart = Date.now();
     await reserveSlot(this.options.runtimeDir, this.options.minIntervalMs, this.options.jitterMs, signal);
     const waitMs = Date.now() - waitStart; // 本次为满足限速实际等待的毫秒数（0=无需等待）
@@ -220,10 +252,13 @@ export class MtopClient {
     let response;
     const reqStart = Date.now();
     // 请求日志：每次真实 HTTP 尝试一行（含重签重试、失败、取消），供风控/异常复盘。
+    // 仅记非敏感诊断标志（cookieCount/hasLogin/hasCna/hasToken，均按实际可发送口径统计），绝不落明文 Cookie。
     const logOutcome = async outcome => {
       await appendRequestLog(this.options.runtimeDir, {
         t: reqStart, ts: new Date(reqStart).toISOString(), api, v: version,
         ...(probe ? { probe: true } : {}), ...(retry ? { retry } : {}),
+        cookieCount: summary.total, hasLogin: summary.hasLoginState,
+        hasCna: summary.hasCna, hasToken: Boolean(token),
         waitMs, ms: Date.now() - reqStart, ...outcome,
       });
     };
@@ -247,7 +282,27 @@ export class MtopClient {
     }
     mergeSetCookies(store, response.headers.getSetCookie());
     await saveCookies(store, this.options.runtimeDir);
-    const parsed = parseBody(await response.text());
+    const rawText = await response.text();
+    const parsed = parseBody(rawText);
+    const location = response.headers?.get?.('location') || '';
+    // 网关有时不返回 JSON ret 而是直接下发 TMD 滑块/punish HTML 页或登录跳转：
+    // 若笼统归为 MTOP_ERROR，会诱发 fetchCatalog 降级与 batch 继续撞接口，必须精准识别并熔断。
+    if (!parsed) {
+      const bodyHead = rawText.slice(0, 160).replace(/\s+/g, ' ').trim();
+      if (/_____tmd_____|x5sec|punish/i.test(rawText) || /_____tmd_____|punish/i.test(location)) {
+        await logOutcome({ ok: false, code: 'RISK_CONTROL', http: response.status, nonJson: true, bodyHead });
+        throw new TaobaoError('RISK_CONTROL',
+          '触发淘宝风控拦截（非 JSON 滑块/验证页）：请求特征或频率被判不可信，与登录态无关。'
+          + '请等待几分钟到十几分钟，期间在浏览器正常访问一次 taobao.com 再重试；若连续触发请拉长请求间隔。',
+          { http: response.status, nonJson: true });
+      }
+      if (/login\.taobao\.com|login\.htm/i.test(location)) {
+        await logOutcome({ ok: false, code: 'AUTH_REQUIRED', http: response.status, nonJson: true, location });
+        throw new TaobaoError('AUTH_REQUIRED', '淘宝登录态失效（网关跳转登录页）。请先在浏览器登录淘宝，然后更新 cookie.json 后重试。', { http: response.status });
+      }
+      await logOutcome({ ok: false, code: 'MTOP_ERROR', http: response.status, ret: [], nonJson: true, bodyHead, ...(location ? { location } : {}) });
+      throw new TaobaoError('MTOP_ERROR', `MTOP 返回非 JSON 响应：HTTP ${response.status}`, { ret: [], bodyHead });
+    }
     const ret = Array.isArray(parsed?.ret) ? parsed.ret.map(String) : [];
     const codes = ret.map(value => value.split('::')[0]);
     const newToken = (store.cookies._m_h5_tk?.value || '').split('_')[0];

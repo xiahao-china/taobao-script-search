@@ -14,14 +14,37 @@ export function cookieStorePath(runtimeDir) {
 // 支持两种格式：
 //   简单格式：{"cookie": "name=value; name2=value2"}
 //   内部格式：{"cookies": {"name": {"value": "...", "domain": "...", "expires": ...}}}
-// 加载规则：主配置存在时以其为登录态基准，仅令牌键（_m_h5_tk/_m_h5_tk_enc）用
-// .runtime 里的续签值覆盖——那两个键是网关临时下发的，配置文件里的永远更旧。
+// 加载规则：主配置存在时以其为登录态基准：
+//   1) 令牌键（_m_h5_tk/_m_h5_tk_enc）用 .runtime 里的未过期续签值覆盖——那两个键是网关临时下发的，配置文件里的永远更旧；
+//   2) 设备指纹键（cna）仅在主配置缺失或过期时从 .runtime 补入——避免每次进程启动都重新访问主页换新指纹。
 // 可用环境变量 TAOBAO_COOKIE_FILE 指定其他主配置路径（测试与多账号场景用，显式指定即独占）。
 const TOKEN_KEYS = ['_m_h5_tk', '_m_h5_tk_enc'];
+const WARM_KEYS = ['cna'];
 
 export function rootCookiePath() {
   return process.env.TAOBAO_COOKIE_FILE
     || join(projectRoot, 'cookie.json');
+}
+
+function normalizeCookieMap(rawCookies) {
+  const cookies = {};
+  for (const [rawName, entry] of Object.entries(rawCookies)) {
+    const name = String(rawName || '').trim();
+    if (!name || entry == null) continue;
+    // 兼容扁平键值格式 {"cookies": {"unb": "123", ...}} 与内部对象格式 {"cookies": {"unb": {"value": "123", ...}}}
+    if (typeof entry === 'string') {
+      if (entry) cookies[name] = { value: entry, domain: '.taobao.com', expires: -1 };
+      continue;
+    }
+    if (typeof entry === 'object' && typeof entry.value === 'string' && entry.value !== '') {
+      cookies[name] = {
+        value: entry.value,
+        domain: entry.domain || '.taobao.com',
+        expires: typeof entry.expires === 'number' ? entry.expires : -1,
+      };
+    }
+  }
+  return cookies;
 }
 
 function storeFromRaw(raw) {
@@ -30,7 +53,9 @@ function storeFromRaw(raw) {
     mergeCookieString(store, raw.cookie);
     return store;
   }
-  if (raw && typeof raw.cookies === 'object' && raw.cookies) return { syncedAt: raw.syncedAt ?? null, sync: raw.sync ?? null, cookies: raw.cookies };
+  if (raw && typeof raw.cookies === 'object' && raw.cookies && !Array.isArray(raw.cookies)) {
+    return { syncedAt: raw.syncedAt ?? null, sync: raw.sync ?? null, cookies: normalizeCookieMap(raw.cookies) };
+  }
   return null;
 }
 
@@ -56,6 +81,14 @@ export async function loadCookies(runtimeDir) {
     const entry = runtimeCache.cookies[key];
     if (entry && !isExpired(entry)) store.cookies[key] = entry;
   }
+  // 设备指纹 cna：主配置已带有效值时尊重主配置；主配置缺失时沿用预热缓存，保持跨进程指纹稳定。
+  for (const key of WARM_KEYS) {
+    const current = store.cookies[key];
+    const cached = runtimeCache.cookies[key];
+    if ((!current || isExpired(current)) && cached && !isExpired(cached)) {
+      store.cookies[key] = cached;
+    }
+  }
   return store;
 }
 
@@ -64,7 +97,7 @@ export async function saveCookies(store, runtimeDir) {
   const path = cookieStorePath(runtimeDir);
   await mkdir(dirname(path), { recursive: true });
   const payload = JSON.stringify(store, null, 2) + '\n';
-  const temp = `${path}.${process.pid}.${Date.now()}.tmp`;
+  const temp = `${path}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 6)}.tmp`;
   await writeFile(temp, payload);
   try {
     await rename(temp, path);
@@ -83,9 +116,13 @@ function isExpired(entry) {
   return entry.expires >= 0 && entry.expires <= Math.floor(Date.now() / 1000);
 }
 
+function isSendable(entry) {
+  return Boolean(entry && typeof entry.value === 'string' && entry.value !== '' && domainOk(entry.domain) && !isExpired(entry));
+}
+
 export function cookieHeader(store) {
   return Object.entries(store.cookies)
-    .filter(([name, entry]) => name && entry && typeof entry.value === 'string' && domainOk(entry.domain) && !isExpired(entry))
+    .filter(([name, entry]) => name && isSendable(entry))
     .map(([name, entry]) => `${name}=${entry.value}`)
     .join('; ');
 }
@@ -127,12 +164,15 @@ export function mergeCookieString(store, text) {
 }
 
 export function cookieSummary(store) {
-  const names = Object.keys(store.cookies);
+  const validNames = Object.entries(store.cookies)
+    .filter(([name, entry]) => name && isSendable(entry))
+    .map(([name]) => name);
   return {
     syncedAt: store.syncedAt,
     sync: store.sync,
-    total: names.length,
-    hasSignToken: names.includes('_m_h5_tk'),
-    hasLoginState: ['unb', 'cookie2', 'sgcookie'].some(name => names.includes(name)),
+    total: validNames.length,
+    hasSignToken: validNames.includes('_m_h5_tk'),
+    hasLoginState: ['unb', 'cookie2', 'sgcookie'].some(name => validNames.includes(name)),
+    hasCna: validNames.includes('cna'),
   };
 }

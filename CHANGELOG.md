@@ -5,6 +5,59 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.1] - 2026-11-22
+
+### Fixed
+
+- **Flat-map `cookie.json` support & accurate `cookieSummary` (`src/core/cookie-store.js`)**:
+  `storeFromRaw` now normalizes flat string-map `cookie.json` entries
+  (`{"cookies": {"unb": "...", "cookie2": "...", ...}}`) into internal cookie
+  objects instead of passing raw strings through. Previously `cookieHeader`
+  silently dropped all non-object login cookies and sent only `_m_h5_tk` /
+  `_m_h5_tk_enc` (triggering immediate `RGV587`), while `cookieSummary`
+  falsely reported `hasLoginState: true`. `cookieSummary` and `cookieHeader`
+  now share the same `isSendable` check (respecting domain, non-empty string
+  value, and expiry).
+- **`fetchCatalog` endpoint order (`src/adapters/taobao/mtop.js`)**: swapped
+  attempts to try `mtop.taobao.pcdetail.data.get` 1.0 first and fall back to
+  `mtop.taobao.detail.getdetail` 6.0 only on failure or missing `skuBase`/
+  `skuCore` (request logs showed 360/360 H5 `getdetail` calls falling back to
+  `pcdetail`, wasting 1 full paced request per item). Fallback events now emit
+  a `catalog-fallback` diagnostic line to `.runtime/log/mtop-request-log.jsonl`.
+- **`addToCart` rate-limit bypass, token redaction & logging (`src/adapters/taobao/mtop.js`)**:
+  reads `minIntervalMs` / `jitterMs` from `this.client.options` (with safe
+  5000 ms fallback) instead of `undefined` on `this.options`, fixing a pacing
+  bypass; computes `waitMs` right after `reserveSlot`; redacts `_tb_token_` as
+  `REDACTED` in request logs; logs honest outcomes (`RISK_CONTROL` /
+  `AUTH_REQUIRED` / `CART_ADD_ERROR`) after response classification; uses
+  `this.client.fetch` for testability; shares `fetchCartPayload` so
+  verification reads no longer write a nested `cart-list` entry in the
+  operation log.
+- **Cross-process `cna` persistence (`src/core/cookie-store.js`)**: when a
+  read-only `cookie.json` lacks a valid `cna`, `loadCookies` now fills it from
+  the `.runtime/mtop-cookies.json` warm-up cache instead of re-fetching a new
+  device fingerprint on every CLI invocation (a valid `cna` in `cookie.json`
+  still takes precedence).
+- **Non-JSON punish/TMD detection on MTOP (`src/core/mtop-client.js`)**:
+  HTML `_____tmd_____` / `x5sec` / `punish` pages and login redirects returned
+  by the gateway are now classified as `RISK_CONTROL` / `AUTH_REQUIRED`
+  instead of `MTOP_ERROR` (`ret: []`), preventing fallback or batch loops from
+  hammering a risk-controlled session.
+- **Rate-limiter edge cases (`src/core/mtop-client.js`)**: explicit `0` in
+  `TAOBAO_MTOP_MIN_INTERVAL_MS` / `TAOBAO_MTOP_JITTER_MS` is no longer
+  overridden by `|| 5000`; `reserveSlot` contention in the immediate branch
+  now re-queues after the competing slot instead of firing concurrently;
+  aborting during a pacing wait throws `TaobaoError('CANCELLED')`; temp files
+  in `reserveSlot` and `saveCookies` include a random suffix.
+
+### Changed
+
+- **Enhanced non-sensitive request diagnostics (`src/core/mtop-client.js`)**:
+  `.runtime/log/mtop-request-log.jsonl` now logs `cookieCount`, `hasLogin`,
+  `hasCna`, and `hasToken` (booleans/counts only, zero secret values), `warm-cna`
+  probe outcomes, and truncated `bodyHead` on non-JSON gateway errors; test
+  count 38 -> 44.
+
 ## [0.8.0] - 2026-11-14
 
 ### Added

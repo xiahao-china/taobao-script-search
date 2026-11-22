@@ -636,3 +636,218 @@ test('cart-remove: 条目不存在报 NO_RESULTS，缺 linkage 签名报 MTOP_ER
   assert.throws(() => buildRemoveUpdateData(broken, '123'),
     error => error.code === 'MTOP_ERROR');
 });
+
+// ── P0 回归测试：pcdetail 优先、cna 跨进程持久化、addToCart 限速与脱敏、取消码 ──
+import { reserveSlot } from '../src/core/mtop-client.js';
+
+test('fetchCatalog: 优先打 pcdetail.data.get（单次命中不浪费 getdetail），缺失 SKU 时才降级并记日志', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'tb-catorder-'));
+  tempDirs.push(base);
+  const dir = join(base, '.runtime');
+  const skuPayload = {
+    skuBase: { props: [], skus: [{ skuId: '100', propPath: '' }] },
+    skuCore: { sku2info: { '100': { price: { priceText: '9.90' } } } },
+  };
+  // 1) pcdetail 直接命中：只发 1 次请求，不发 getdetail，不产生 catalog-fallback 日志。
+  const hitClient = stubClient([skuPayload]);
+  const hitAdapter = new MtopAdapter({ client: hitClient, runtimeDir: dir });
+  const cat = await hitAdapter.fetchCatalog('123456');
+  assert.equal(hitClient.calls.length, 1);
+  assert.equal(hitClient.calls[0].api, 'mtop.taobao.pcdetail.data.get', '应优先调用 pcdetail.data.get');
+  assert.equal(cat.sourceApi, 'mtop.taobao.pcdetail.data.get');
+
+  // 2) pcdetail 缺 SKU → 降级到 detail.getdetail，且记录 catalog-fallback 诊断日志。
+  const fbClient = stubClient([{ empty: true }, skuPayload]);
+  const fbAdapter = new MtopAdapter({ client: fbClient, runtimeDir: dir });
+  const cat2 = await fbAdapter.fetchCatalog('654321');
+  assert.deepEqual(fbClient.calls.map(c => c.api), ['mtop.taobao.pcdetail.data.get', 'mtop.taobao.detail.getdetail']);
+  assert.equal(cat2.sourceApi, 'mtop.taobao.detail.getdetail');
+  const logs = (await readFile(join(dir, 'log', 'mtop-request-log.jsonl'), 'utf8'))
+    .trim().split('\n').map(line => JSON.parse(line));
+  assert.equal(logs.length, 1);
+  assert.equal(logs[0].api, 'catalog-fallback');
+  assert.equal(logs[0].fromApi, 'mtop.taobao.pcdetail.data.get');
+  assert.equal(logs[0].toApi, 'mtop.taobao.detail.getdetail');
+  assert.equal(logs[0].reason, 'missing-sku');
+});
+
+test('cookie.json + warmSession: 缺 cna 时预热写入 .runtime，跨进程复用不重复请求主页', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'tb-cna-'));
+  isolate(dir);
+  await writeFile(join(dir, 'cookie.json'), JSON.stringify({ cookie: 'unb=99; cookie2=login99' }));
+  let homeHits = 0;
+  const mockFetch = async url => {
+    const href = String(url);
+    if (href === 'https://www.taobao.com/') {
+      homeHits += 1;
+      return mockResponse('<html></html>', { setCookies: ['cna=STABLE_CNA_001; Domain=.taobao.com; Path=/'] });
+    }
+    if (href.includes('mtop.common.gettimestamp')) {
+      return mockResponse({ ret: ['FAIL_SYS_TOKEN_EMPTY::空'] }, {
+        setCookies: ['_m_h5_tk=tok1_9999999999999; Domain=.taobao.com', '_m_h5_tk_enc=enc1; Domain=.taobao.com'],
+      });
+    }
+    return mockResponse({ ret: ['SUCCESS::调用成功'], data: { ok: true } });
+  };
+  const runtimeDir = join(dir, '.runtime');
+  // 进程 1：首次预热领取 cna + token
+  const client1 = new MtopClient({ runtimeDir, minIntervalMs: 0, jitterMs: 0, fetch: mockFetch });
+  await client1.request('mtop.taobao.wsearch.appsearch', '1.0', { q: 'a' });
+  assert.equal(homeHits, 1, '首次缺 cna 时应访问主页一次');
+
+  // 进程 2（全新 MtopClient 实例）：应从 .runtime 补入 cna，不再访问主页
+  const client2 = new MtopClient({ runtimeDir, minIntervalMs: 0, jitterMs: 0, fetch: mockFetch });
+  await client2.request('mtop.taobao.wsearch.appsearch', '1.0', { q: 'b' });
+  assert.equal(homeHits, 1, '后续进程应复用缓存 cna，不得每次换新指纹');
+
+  // 请求日志应包含 warm-cna 与 hasCna/hasToken 诊断标志，且不泄漏 cna 值
+  const rawLog = await readFile(join(runtimeDir, 'log', 'mtop-request-log.jsonl'), 'utf8');
+  assert.ok(!rawLog.includes('STABLE_CNA_001'), '请求日志不得出现明文 cna');
+  const entries = rawLog.trim().split('\n').map(line => JSON.parse(line));
+  assert.ok(entries.some(e => e.api === 'warm-cna' && e.gotCna === true));
+  const bizCalls = entries.filter(e => e.api === 'mtop.taobao.wsearch.appsearch');
+  assert.equal(bizCalls.length, 2);
+  assert.equal(bizCalls[1].hasCna, true);
+  assert.equal(bizCalls[1].hasToken, true);
+
+  // 主配置本身带有有效 cna 时，尊重主配置而不被缓存覆盖
+  await writeFile(join(dir, 'cookie.json'), JSON.stringify({ cookie: 'unb=99; cna=PRIMARY_CNA_999' }));
+  const loaded = await loadCookies(runtimeDir);
+  assert.equal(loaded.cookies.cna.value, 'PRIMARY_CNA_999');
+});
+
+test('addToCart: 走全局限速、脱敏 _tb_token_、诚实记录风控日志、不嵌套多写 cart-list 操作日志', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'tb-cartadd-'));
+  isolate(dir);
+  const runtimeDir = join(dir, '.runtime');
+  await writeFile(join(dir, 'cookie.json'), JSON.stringify({
+    cookie: 'unb=88; cookie2=ok; cna=c88; _m_h5_tk=tok_88; _tb_token_=SECRET_CSRF_TOKEN_XYZ',
+  }));
+  const bagPayload = {
+    ret: ['SUCCESS::调用成功'],
+    data: {
+      data: {
+        header_1: { id: '1', tag: 'header', fields: { title: '购物车' } },
+        item_777: {
+          id: '777', tag: 'item', bundleId: 's_1',
+          fields: { itemId: '555666', cartId: '777', title: '测试商品', sku: { skuId: '0' }, quantity: '2', pay: { nowTitle: '￥1.50', total: 150 }, isChecked: 'true', canCheck: true },
+        },
+        shop_s_1: { id: 's_1', tag: 'shop', fields: { title: '测试店', bizArgs: { shopId: 1 } } },
+        submit_1: { id: '1', tag: 'submit', fields: { quantity: 1, submit: { title: '结算(1)' }, pay: { priceTitle: '￥1.50', totalDiscount: '￥0' } } },
+      },
+    },
+  };
+  let mode = 'ok';
+  const timestamps = [];
+  const mockFetch = async url => {
+    const href = String(url);
+    timestamps.push({ href, t: Date.now() });
+    if (href.includes('add_cart_item.htm')) {
+      if (mode === 'tmd') return mockResponse('<html>_____tmd_____ punish</html>', { status: 200 });
+      return mockResponse('TB.Detail.CartResult = { "cartQuantity": "5", "cartPrice": "" }', { status: 200 });
+    }
+    return mockResponse(bagPayload);
+  };
+  const client = new MtopClient({ runtimeDir, minIntervalMs: 80, jitterMs: 0, fetch: mockFetch });
+  const adapter = new MtopAdapter({ client, runtimeDir });
+  const res = await adapter.addToCart('555666', { quantity: 2 });
+  assert.equal(res.data.entryFound, true);
+  assert.equal(res.data.cartQuantity, 5);
+  assert.equal(timestamps.length, 2, '1 次 add_cart_item + 1 次 query.bag 回读');
+  assert.ok(timestamps[1].t - timestamps[0].t >= 60, `回读必须受 addToCart 写入的限速坑位约束（实测间隔 ${timestamps[1].t - timestamps[0].t}ms）`);
+
+  // 风控场景：HTTP 200 返回 _____tmd_____ 必须抛 RISK_CONTROL 且日志记 ok:false, code:RISK_CONTROL
+  mode = 'tmd';
+  await assert.rejects(adapter.addToCart('555666', { quantity: 1 }), error => error.code === 'RISK_CONTROL');
+
+  // 校验请求日志：无明文 _tb_token_、waitMs/code 准确
+  const rawReqLog = await readFile(join(runtimeDir, 'log', 'mtop-request-log.jsonl'), 'utf8');
+  assert.ok(!rawReqLog.includes('SECRET_CSRF_TOKEN_XYZ'), '请求日志绝对不能泄露 _tb_token_');
+  assert.ok(rawReqLog.includes('_tb_token_=REDACTED'), '请求日志应对 _tb_token_ 脱敏');
+  const reqEntries = rawReqLog.trim().split('\n').map(l => JSON.parse(l));
+  const cartAddLogs = reqEntries.filter(e => e.api === 'cart-add');
+  assert.equal(cartAddLogs.length, 2);
+  assert.equal(cartAddLogs[0].ok, true);
+  assert.equal(cartAddLogs[1].ok, false);
+  assert.equal(cartAddLogs[1].code, 'RISK_CONTROL');
+  assert.ok(cartAddLogs[1].waitMs >= 50, '第 2 次加购应经过限速等待并记录 waitMs');
+
+  // 校验操作日志：2 次 cart-add 只产生 2 条 cart-add，无嵌套的 cart-list
+  const opEntries = (await readFile(join(runtimeDir, 'log', 'mtop-operation-log.jsonl'), 'utf8'))
+    .trim().split('\n').map(l => JSON.parse(l));
+  assert.deepEqual(opEntries.map(e => e.operation), ['cart-add', 'cart-add']);
+});
+
+test('MtopClient & reserveSlot: 环境变量 0 不被吞掉，限速等待期间中止抛 CANCELLED', async () => {
+  const prevMin = process.env.TAOBAO_MTOP_MIN_INTERVAL_MS;
+  const prevJit = process.env.TAOBAO_MTOP_JITTER_MS;
+  try {
+    process.env.TAOBAO_MTOP_MIN_INTERVAL_MS = '0';
+    process.env.TAOBAO_MTOP_JITTER_MS = '0';
+    const c = new MtopClient();
+    assert.equal(c.options.minIntervalMs, 0);
+    assert.equal(c.options.jitterMs, 0);
+  } finally {
+    if (prevMin === undefined) delete process.env.TAOBAO_MTOP_MIN_INTERVAL_MS; else process.env.TAOBAO_MTOP_MIN_INTERVAL_MS = prevMin;
+    if (prevJit === undefined) delete process.env.TAOBAO_MTOP_JITTER_MS; else process.env.TAOBAO_MTOP_JITTER_MS = prevJit;
+  }
+  const base = await mkdtemp(join(tmpdir(), 'tb-abort-'));
+  tempDirs.push(base);
+  const dir = join(base, '.runtime');
+  await reserveSlot(dir, 500, 0); // 占首个坑位
+  const ac = new AbortController();
+  setTimeout(() => ac.abort(), 30);
+  await assert.rejects(reserveSlot(dir, 500, 0, ac.signal), error => error.code === 'CANCELLED');
+});
+
+test('MtopClient: 网关返回非 JSON TMD 滑块页时识别为 RISK_CONTROL 并记录 bodyHead', async () => {
+  const base = await mkdtemp(join(tmpdir(), 'tb-tmd-'));
+  isolate(base);
+  const dir = join(base, '.runtime');
+  await saveCookies({
+    syncedAt: null, sync: null,
+    cookies: {
+      unb: { value: 'u1', domain: '.taobao.com', expires: -1 },
+      cna: { value: 'c1', domain: '.taobao.com', expires: -1 },
+      _m_h5_tk: { value: 'tok_1', domain: '.taobao.com', expires: -1 },
+    },
+  }, dir);
+  const client = new MtopClient({
+    runtimeDir: dir, minIntervalMs: 0, jitterMs: 0,
+    fetch: async () => mockResponse('<html><script>window.location="/_____tmd_____/punish"</script></html>', { status: 200 }),
+  });
+  await assert.rejects(client.request('mtop.taobao.pcdetail.data.get', '1.0', { id: '1' }), error => error.code === 'RISK_CONTROL');
+  const log = JSON.parse((await readFile(join(dir, 'log', 'mtop-request-log.jsonl'), 'utf8')).trim());
+  assert.equal(log.code, 'RISK_CONTROL');
+  assert.equal(log.nonJson, true);
+  assert.equal(log.cookieCount, 3);
+  assert.equal(log.hasLogin, true);
+  assert.ok(log.bodyHead.includes('_____tmd_____'));
+});
+
+test('cookie.json: 兼容扁平键值格式 {"cookies":{"unb":"..."}} 且 cookieSummary 按实际可发送口径统计', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'tb-flatcookie-'));
+  isolate(dir);
+  await writeFile(join(dir, 'cookie.json'), JSON.stringify({
+    syncedAt: '2026-11-22T00:00:00Z',
+    cookies: { unb: '10086', cookie2: 'login_ok', cna: 'cna_flat', empty: '' },
+  }));
+  const loaded = await loadCookies();
+  const header = cookieHeader(loaded);
+  assert.ok(header.includes('unb=10086'), '扁平字符串值必须归一化为可发送 Cookie');
+  assert.ok(header.includes('cookie2=login_ok'));
+  assert.ok(header.includes('cna=cna_flat'));
+  assert.ok(!header.includes('empty='));
+  const summary = cookieSummary(loaded);
+  assert.equal(summary.total, 3);
+  assert.equal(summary.hasLoginState, true);
+  assert.equal(summary.hasCna, true);
+
+  // 已过期的登录态 Cookie 在 cookieSummary 中不得虚报 hasLoginState=true
+  const expiredStore = {
+    syncedAt: null, sync: null,
+    cookies: { unb: { value: '1', domain: '.taobao.com', expires: 1000 } },
+  };
+  assert.equal(cookieSummary(expiredStore).hasLoginState, false);
+  assert.equal(cookieSummary(expiredStore).total, 0);
+});

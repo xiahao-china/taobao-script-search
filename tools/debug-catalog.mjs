@@ -1,5 +1,5 @@
 import { writeFile } from 'node:fs/promises';
-import { MtopAdapter } from '../src/adapters/taobao/mtop.js';
+import { MtopAdapter } from '../build/adapters/taobao/mtop.js';
 
 const adapter = new MtopAdapter({});
 const catalog = await adapter.fetchCatalog('786222261977');

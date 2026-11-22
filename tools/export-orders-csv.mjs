@@ -4,9 +4,9 @@
 // 列表按时间倒序翻页，整页时间早于截止线即停。进度逐页落盘 .runtime/orders-export-progress.json，
 // 中断后重跑自动续传。用法：node tools/export-orders-csv.mjs
 import { writeFile, readFile, mkdir } from 'node:fs/promises';
-import { loadCookies, cookieSummary } from '../src/core/cookie-store.js';
-import { MtopClient, parseBody } from '../src/core/mtop-client.js';
-import { normalizeUrl } from '../src/core/url.js';
+import { loadCookies, cookieSummary } from '../build/core/cookie-store.js';
+import { MtopClient, parseBody } from '../build/core/mtop-client.js';
+import { normalizeUrl } from '../build/core/url.js';
 
 const CUTOFF = Date.parse('2026-06-30T00:00:00+08:00'); // 含 6月30日当天
 const CSV_PATH = '.runtime/artifacts/taobao-orders-since-2026-06-30.csv';

@@ -1,6 +1,6 @@
 {
   "name": "taobao-script-search",
-  "version": "0.8.1",
+  "version": "0.9.0",
   "private": true,
   "description": "Pure HTTP MTOP client for Taobao product queries (no browser, no daemon)",
   "keywords": [
@@ -23,15 +23,25 @@
   "engines": {
     "node": ">=22"
   },
-  "exports": "./src/index.js",
+  "exports": {
+    ".": {
+      "types": "./build/index.d.ts",
+      "import": "./build/index.js"
+    }
+  },
   "bin": {
     "taobao": "./bin/taobao.js"
   },
   "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc -p tsconfig.test.json --noEmit",
     "taobao": "node bin/taobao.js",
-    "test": "node --test tools/mtop-local.test.js tools/shop-search.test.js",
+    "test": "npm run build && tsc -p tsconfig.test.json && node --test .runtime/test-build/tools/mtop-local.test.js .runtime/test-build/tools/shop-search.test.js .runtime/test-build/tools/cli-and-pipeline.test.js",
     "probe:mtop": "node tools/probe-mtop.js",
-    "pkg": "node tools/package-skill.mjs && powershell -NoProfile -Command \"Compress-Archive -Path .runtime/skill-stage/taobao-product-search -DestinationPath dist/taobao-product-search.zip -Force\""
+    "pkg": "npm run build && node tools/package-skill.mjs && powershell -NoProfile -Command \"Compress-Archive -Path .runtime/skill-stage/taobao-product-search -DestinationPath dist/taobao-product-search.zip -Force\""
   },
-  "dependencies": {}
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "typescript": "^7.0.2"
+  }
 }

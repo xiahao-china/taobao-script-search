@@ -3,8 +3,8 @@
 // add_cart_item()、2016 CSDN 参数分析（item_id/outer_id/quantity/_tb_token_）。
 // 目标：确认最小参数集（item_id + quantity + _tb_token_）在纯 HTTP 下的响应形态。
 // 这是写操作：真实加购 1 件商品到用户购物车，跑之前想清楚。
-import { loadCookies, cookieHeader } from '../src/core/cookie-store.js';
-import { reserveSlot, appendRequestLog } from '../src/core/mtop-client.js';
+import { loadCookies, cookieHeader } from '../build/core/cookie-store.js';
+import { reserveSlot, appendRequestLog } from '../build/core/mtop-client.js';
 
 const ITEM_ID = process.argv[2] || '653734638954';
 const SKU_ID = process.argv[3] || '';

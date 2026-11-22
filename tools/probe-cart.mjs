@@ -1,5 +1,5 @@
 import { writeFileSync } from 'node:fs';
-import { MtopClient } from '../src/core/mtop-client.js';
+import { MtopClient } from '../build/core/mtop-client.js';
 const client = new MtopClient({ runtimeDir: null });
 const payload = await client.request('mtop.trade.query.bag', '5.0', {
   isPage: true, extStatus: 0, netType: 0,

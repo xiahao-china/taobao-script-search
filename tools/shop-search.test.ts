@@ -3,9 +3,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { parseShopRef, extractWid, extractFontUrl, parseShopSearch, parseJsonp } from '../src/adapters/taobao/shop-search.js';
+import { parseShopRef, extractWid, extractFontUrl, parseShopSearch, parseJsonp, ShopSearchAdapter } from '../src/adapters/taobao/shop-search.js';
 import { parsePriceFontMap, decodeEntities } from '../src/core/shop-font.js';
 import { gbkEncode } from '../src/core/gbk.js';
+import { saveCookies } from '../src/core/cookie-store.js';
+import type { FetchLike } from '../src/types.js';
 
 // ── GBK 编码：与浏览器行为一致（HAR 基准 q=0805+%B5%E7%D7%E8）
 test('gbk: 常用中文关键词编码与浏览器 HAR 基准逐字节一致', () => {
@@ -50,17 +52,15 @@ test('jsonp: 内层 JSON 字符串解开一层，非 JSONP 输入返回 null', (
   const raw = 'jsonp123("{\\"a\\":\\"\\u4ef7\\u683c&#34500;\\",\\"n\\":1}")';
   const body = parseJsonp(raw);
   assert.equal(typeof body, 'string', '内层是 JSON 字符串，解开一层后仍为字符串');
-  assert.match(body, /价格&#34500;/, 'unicode 转义已解开，HTML 实体保留待字体映射处理');
+  assert.match(body!, /价格&#34500;/, 'unicode 转义已解开，HTML 实体保留待字体映射处理');
   assert.equal(parseJsonp('not jsonp at all'), null);
 });
 
 // ── 商品块解析：切块 / 字段 / 价格字体映射
-const FONT_WOFF_FIXTURE = null; // 字体用真实样本在集成环境验证；单测用合成映射
-
 test('shopSearch 解析: 商品块字段齐全，价格经字体映射还原', () => {
   // 合成映射：码点 → 数字字符（模拟字体轮换机制；'0' 也入映射）
-  const fontMap = new Map([[65000, '1'], [65001, '4'], [65002, '.'], [65003, '0'], [65004, '2']]);
-  const item = (id, price, strike) => `<dl class="item" data-id="${id}">
+  const fontMap = new Map<number, string>([[65000, '1'], [65001, '4'], [65002, '.'], [65003, '0'], [65004, '2']]);
+  const item = (id: string) => `<dl class="item" data-id="${id}">
     <dt class="photo"><a href="//item.taobao.com/item.htm?id=${id}&amp;mi_id=x">
       <img src="//img.alicdn.com/bao/uploaded/pic_${id}.jpg"></a></dt>
     <dd class="detail"><a class="item-name J_TGoldData" href="//item.taobao.com/item.htm?id=${id}"> 电阻 ${id} </a>
@@ -69,13 +69,13 @@ test('shopSearch 解析: 商品块字段齐全，价格经字体映射还原', (
       <span class="sale-num"> 21 </span></dd></dl>`;
   const body = '<div class="search-result">共搜索到<span> 197 </span>个符合条件的商品。'
     + `<span class="page-info">1/9</span>`
-    + item('522579332490', 0, 0) + item('522554163487', 0, 0);
+    + item('522579332490') + item('522554163487');
   const parsed = parseShopSearch(body, fontMap);
   assert.equal(parsed.total, 197);
   assert.equal(parsed.page, 1);
   assert.equal(parsed.pages, 9);
   assert.equal(parsed.items.length, 2);
-  const first = parsed.items[0];
+  const first = parsed.items[0]!;
   assert.equal(first.itemId, '522579332490');
   assert.equal(first.priceText, '14.00', '码点实体经字体映射还原为明文价格');
   assert.equal(first.strikethroughText, '1.21');
@@ -90,14 +90,14 @@ test('shopSearch 解析: 无字体映射时价格置 null（混合策略），�
   const body = `<dl class="item" data-id="1"><a class="item-name" href="//item.taobao.com/item.htm?id=1">X</a>
     <span class="c-price">&#65001;&#99999999;</span></dl>`;
   const noFont = parseShopSearch(body, null);
-  assert.equal(noFont.items[0].priceText, null, 'fontMap 缺失 → null，不臆造');
-  assert.equal(noFont.items[0].priceUnknown, false);
+  assert.equal(noFont.items[0]?.priceText, null, 'fontMap 缺失 → null，不臆造');
+  assert.equal(noFont.items[0]?.priceUnknown, false);
   const withFont = parseShopSearch(body, new Map([[65001, '1']]));
-  assert.equal(withFont.items[0].priceText, '1?', '映射缺失的码点记 ?，保持位数可对账');
-  assert.equal(withFont.items[0].priceUnknown, false, '部分解出不算全未知');
+  assert.equal(withFont.items[0]?.priceText, '1?', '映射缺失的码点记 ?，保持位数可对账');
+  assert.equal(withFont.items[0]?.priceUnknown, false, '部分解出不算全未知');
   const allUnknown = parseShopSearch('<dl class="item" data-id="2"><span class="c-price">&#99999999;</span></dl>', new Map());
-  assert.equal(allUnknown.items[0].priceText, '?');
-  assert.equal(allUnknown.items[0].priceUnknown, true, '完全未解出的价格标记 unknown');
+  assert.equal(allUnknown.items[0]?.priceText, '?');
+  assert.equal(allUnknown.items[0]?.priceUnknown, true, '完全未解出的价格标记 unknown');
 });
 
 // ── 字体解码器：合成 WOFF 无法凭空构造（含 zlib 压缩与表布局），
@@ -113,9 +113,6 @@ test('decodeEntities: 未知码点记 ?，混合实体位数保持', () => {
   assert.equal(decodeEntities('&#65;', map), 'A');
 });
 
-import { ShopSearchAdapter } from '../src/adapters/taobao/shop-search.js';
-import { saveCookies } from '../src/core/cookie-store.js';
-
 test('ShopSearchAdapter: 页面改版导致 extractWid 返回 null 时保留已有缓存 wid，不覆盖为 null', async () => {
   const base = await mkdtemp(join(tmpdir(), 'tb-shopwid-'));
   const dir = join(base, '.runtime');
@@ -127,17 +124,18 @@ test('ShopSearchAdapter: 页面改版导致 extractWid 返回 null 时保留已�
   await writeFile(join(dir, 'shop-wid.json'), JSON.stringify({
     'shop123456.taobao.com': { wid: '987654321', host: 'shop123456.taobao.com', resolvedAt: '2026-11-12T00:00:00Z' },
   }));
-  const urls = [];
-  const mockFetch = async url => {
+  const urls: string[] = [];
+  const mockFetch: FetchLike = async url => {
     const href = String(url);
     urls.push(href);
     const body = !href.includes('/i/asynSearch.htm')
       ? '<html><body>no widget id here</body></html>'
       : `jsonp1(${JSON.stringify('<dl data-id="112233"><a class="item-name" href="//item.taobao.com/item.htm?id=112233">Demo</a></dl>')})`;
+    const buf = Buffer.from(body, 'utf8');
     return {
       ok: true, status: 200,
       headers: { getSetCookie: () => [] },
-      arrayBuffer: async () => Buffer.from(body, 'utf8'),
+      arrayBuffer: async () => buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength),
     };
   };
   const adapter = new ShopSearchAdapter({ runtimeDir: dir, fetch: mockFetch });

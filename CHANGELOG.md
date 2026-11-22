@@ -5,6 +5,45 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0] - 2026-11-22
+
+### Changed
+
+- **Full TypeScript strict migration (`src/**/*.ts`, `tools/*.test.ts`)**:
+  migrated all 16 runtime modules and unit test suites from plain JS to strict
+  TypeScript (`strict`, `noUncheckedIndexedAccess`, `noImplicitOverride`,
+  `verbatimModuleSyntax`, `isolatedModules`), adding centralized domain &
+  protocol types in `src/types.ts` (exported with `.d.ts` declarations via
+  `package.json` `exports`). Runtime remains **zero npm dependencies**
+  (`typescript` and `@types/node` are `devDependencies` only); `npm run build`
+  compiles `src/` -> `build/`, `bin/taobao.js` launches `../build/cli.js`, and
+  `npm run pkg` bundles compiled pure `.js` + `.d.ts` into
+  `dist/taobao-product-search.zip` (compatible with all Node >= 22).
+- Added `npm run build` and `npm run typecheck` scripts; `npm test` and
+  `npm run pkg` build automatically before running.
+
+### Fixed
+
+- **Concurrency-safe `reserveSlot` (`src/core/mtop-client.ts`)**: fixed a
+  same-millisecond race where concurrent callers seeing `planned <= now` could
+  both pass simultaneously. Now serializes per-path callers in-process via a
+  Promise queue and writes a unique `owner` token alongside `lastAt` in
+  `mtop-pacing.json` so cross-process contenders re-queue cleanly after the
+  winning slot.
+- **CLI & shop-search hardening**: `--timeout` now validates positive finite
+  numbers as `INVALID_ARGUMENT` (instead of throwing `TypeError` ->
+  `INTERNAL_ERROR`); `ShopSearchAdapter` now uses `parseEnvMs` (preserving
+  explicit `0`) and atomic temp-file + `rename` writes for `shop-wid.json`.
+
+### Added
+
+- **Full pipeline & CLI E2E test suite (`tools/cli-and-pipeline.test.ts`)**:
+  covers MTOP POST form-body + MD5 signing, `reserveSlot` concurrency,
+  `getDetail` (store/fans enrichment, degrade & fatal rethrow, unconfirmed SKU
+  price guard), `getReviewSummary`, `removeFromCart` 3-step loop, `addToCart`
+  SKU & failure branches, `ShopSearchAdapter` pagination/cache invalidation,
+  and real subprocess CLI E2E checks (`bin/taobao.js`); test count 44 -> 52.
+
 ## [0.8.1] - 2026-11-22
 
 ### Fixed

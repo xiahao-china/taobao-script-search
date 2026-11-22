@@ -2,10 +2,23 @@ import { parseArgs } from 'node:util';
 import { readFile, writeFile, rename, rm, mkdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
-import { failure, TaobaoError } from './core/errors.js';
+import { failure, TaobaoError, getErrorCode, getErrorMessage } from './core/errors.js';
 import { loadCookies, saveCookies, mergeCookieString, cookieSummary, rootCookiePath } from './core/cookie-store.js';
 import { MtopAdapter } from './adapters/taobao/mtop.js';
 import { ShopSearchAdapter } from './adapters/taobao/shop-search.js';
+import type {
+  BatchInput,
+  BatchProgress,
+  CliEnvelope,
+  CookieSummary,
+  OperationMeta,
+  OrderRecord,
+  OrdersData,
+  SdkResult,
+  SearchOptions,
+  SearchSort,
+  SpecInput,
+} from './types.js';
 
 const help = `淘宝查询：纯 HTTP MTOP 直连（零浏览器依赖，即用即调）
   taobao search <关键词> [--limit 20] [--page 1] [--sort default]
@@ -50,38 +63,60 @@ cookie.json 只读不被程序改写；签名令牌自动续签，登录态失�
 止剩余条目，避免带坏状态继续撞接口）。
 请求日志：.runtime/log/mtop-request-log.jsonl 每行记录一次真实请求（时间/接口/结果/等待与
 耗时），被风控或异常时用它复盘查询节奏；操作日志：.runtime/log/mtop-operation-log.jsonl
-每行记录一次业务查询（时间/查询类型 search·specs·detail·orders/入参/完整结果内容或错误），
+每行记录一次业务查询（时间/查询类型 search·specs·detail·orders·shop-search·cart-*/入参/完整结果内容或错误），
 查「当时搜了什么、搜到了什么」用它。两份日志均超 5MB 轮转为同文件夹 .old，可随时整文件删除。`;
 
-function envelope(operation, payload) {
+interface CliValues {
+  help?: boolean;
+  limit?: string;
+  page?: string;
+  sort?: string;
+  pages?: string;
+  tab?: string;
+  'spec-id'?: string;
+  spec?: string;
+  labels?: string;
+  default?: boolean;
+  'sku-id'?: string;
+  quantity?: string;
+  reviews?: boolean;
+  file?: string;
+  output?: string;
+  'cookie-string'?: string;
+  stdin?: boolean;
+  'runtime-dir'?: string;
+  timeout?: string;
+}
+
+function envelope<T>(operation: string, payload: SdkResult<T>): CliEnvelope<T, OperationMeta> {
   return { ok: true, operation, data: payload.data, error: null, meta: payload.meta };
 }
 
 // 命令行 JSON 入参/清单文件解析失败必须归类为 INVALID_ARGUMENT，
 // 裸 JSON.parse 的 SyntaxError 会被顶层兜底成 INTERNAL_ERROR。
-function parseJsonInput(raw, label) {
-  try { return JSON.parse(raw); }
-  catch (error) { throw new TaobaoError('INVALID_ARGUMENT', `${label} 不是合法的 JSON：${error.message}`); }
+function parseJsonInput(raw: string, label: string): unknown {
+  try { return JSON.parse(raw) as unknown; }
+  catch (error: unknown) { throw new TaobaoError('INVALID_ARGUMENT', `${label} 不是合法的 JSON：${getErrorMessage(error)}`); }
 }
 
-async function readBatchFile(path) {
-  let text;
+async function readBatchFile(path: string): Promise<BatchInput> {
+  let text: string;
   try { text = await readFile(resolve(path), 'utf8'); }
-  catch (error) { throw new TaobaoError('INVALID_ARGUMENT', `批量清单文件不可读（${path}）：${error.message}`); }
-  return parseJsonInput(text, '批量清单文件');
+  catch (error: unknown) { throw new TaobaoError('INVALID_ARGUMENT', `批量清单文件不可读（${path}）：${getErrorMessage(error)}`); }
+  return parseJsonInput(text, '批量清单文件') as BatchInput;
 }
 
-function readStdin() {
+function readStdin(): Promise<string> {
   return new Promise((resolvePromise, reject) => {
     let text = '';
     process.stdin.setEncoding('utf8');
-    process.stdin.on('data', chunk => { text += chunk; });
+    process.stdin.on('data', chunk => { text += String(chunk); });
     process.stdin.on('end', () => resolvePromise(text.trim()));
     process.stdin.on('error', reject);
   });
 }
 
-async function syncCookie(values) {
+async function syncCookie(values: CliValues): Promise<CliEnvelope<CookieSummary, null>> {
   const runtimeDir = values['runtime-dir'] || null;
   const manual = values['cookie-string'] !== undefined ? String(values['cookie-string'])
     : values.stdin ? await readStdin() : null;
@@ -99,7 +134,12 @@ async function syncCookie(values) {
   return { ok: true, operation: 'sync-cookie', data, error: null, meta: null };
 }
 
-async function mtopCommand(operation, positionals, values, control) {
+async function mtopCommand(
+  operation: string,
+  positionals: string[],
+  values: CliValues,
+  control: { signal: AbortSignal },
+): Promise<CliEnvelope<unknown, OperationMeta>> {
   const runtimeDir = values['runtime-dir'] || null;
   const store = await loadCookies(runtimeDir);
   if (!cookieSummary(store).hasLoginState) {
@@ -108,28 +148,35 @@ async function mtopCommand(operation, positionals, values, control) {
       + '1) 复制仓库根目录 cookie.example.json 为 cookie.json，把 cookie 字段替换为浏览器中 taobao.com 的完整 Cookie 字符串（F12 → Network → 任意请求 → Cookie 请求头）；'
       + '2) 执行 taobao sync-cookie --cookie-string "name=value; ..."。详见 README「配置 Cookie」。');
   }
+  let timeoutMs: number | undefined;
+  if (values.timeout !== undefined) {
+    const parsed = Number(values.timeout);
+    if (!Number.isFinite(parsed) || parsed <= 0) throw new TaobaoError('INVALID_ARGUMENT', 'timeout 须为正数（单位：秒）。');
+    timeoutMs = parsed * 1000;
+  }
   const adapter = new MtopAdapter({
-    runtimeDir: values['runtime-dir'] || null,
-    ...(values.timeout ? { timeoutMs: Number(values.timeout) * 1000 } : {}),
+    runtimeDir,
+    ...(timeoutMs !== undefined ? { timeoutMs } : {}),
   });
-  const queryOptions = {
-    ...(values.limit ? { limit: Number(values.limit) } : {}), ...(values.page ? { page: Number(values.page) } : {}),
-    ...(values.sort ? { sort: values.sort } : {}),
+  const queryOptions: SearchOptions = {
+    ...(values.limit ? { limit: Number(values.limit) } : {}),
+    ...(values.page ? { page: Number(values.page) } : {}),
+    ...(values.sort ? { sort: values.sort as SearchSort } : {}),
   };
-  if (operation === 'search') return envelope('search', await adapter.search(positionals[1], queryOptions, control.signal));
+  if (operation === 'search') return envelope('search', await adapter.search(positionals[1] ?? '', queryOptions, control.signal));
   if (operation === 'shop-search') {
     if (!positionals[1] || !positionals[2]) {
       throw new TaobaoError('INVALID_ARGUMENT', 'shop-search 需要 <关键词> 和 <店铺URL或shopId> 两个参数。');
     }
     const shopAdapter = new ShopSearchAdapter({
-      runtimeDir: values['runtime-dir'] || null,
-      ...(values.timeout ? { timeoutMs: Number(values.timeout) * 1000 } : {}),
+      runtimeDir,
+      ...(timeoutMs !== undefined ? { timeoutMs } : {}),
     });
     const pages = Number(values.pages || 1);
     return envelope('shop-search', await shopAdapter.shopSearch(positionals[1], positionals[2],
       { page: Number(values.page || 1), pages }, control.signal));
   }
-  if (operation === 'specs') return envelope('specs', await adapter.getSpecs(positionals[1], queryOptions, control.signal));
+  if (operation === 'specs') return envelope('specs', await adapter.getSpecs(positionals[1] ?? '', queryOptions as Record<string, unknown>, control.signal));
   if (operation === 'orders') {
     const page = Number(values.page || 1);
     const pages = Number(values.pages || 1);
@@ -137,21 +184,22 @@ async function mtopCommand(operation, positionals, values, control) {
     if (pages === 1) return envelope('orders', await adapter.getOrders({ page, ...(values.tab ? { tab: values.tab } : {}) }, control.signal));
     // 连续翻页：逐页请求合并。空页即止；有分页元数据时到 totalPage 提前收尾；
     // 翻过最后一页时接口会抛 NO_RESULTS——非首轮捕获后视为正常到末页，保留已拉取数据。
-    const merged = [];
-    let last = null;
+    const merged: OrderRecord[] = [];
+    let last: SdkResult<OrdersData> | null = null;
     for (let offset = 0; offset < pages; offset++) {
-      let result;
+      let result: SdkResult<OrdersData>;
       try {
         result = await adapter.getOrders({ page: page + offset, ...(values.tab ? { tab: values.tab } : {}) }, control.signal);
-      } catch (error) {
-        if (error.code === 'NO_RESULTS' && offset > 0 && last) break;
+      } catch (error: unknown) {
+        if (getErrorCode(error) === 'NO_RESULTS' && offset > 0 && last) break;
         throw error;
       }
       last = result;
       merged.push(...result.data.orders);
       const totalPage = result.data.pagination?.totalPage;
-      if (!result.data.orders.length || (Number.isInteger(totalPage) && page + offset >= totalPage)) break;
+      if (!result.data.orders.length || (typeof totalPage === 'number' && Number.isInteger(totalPage) && page + offset >= totalPage)) break;
     }
+    if (!last) throw new TaobaoError('NO_RESULTS', '订单接口未返回订单数据。');
     return envelope('orders', { data: { ...last.data, page, orders: merged }, meta: last.meta });
   }
   if (operation === 'cart-list') return envelope('cart-list', await adapter.getCartList(control.signal));
@@ -168,13 +216,14 @@ async function mtopCommand(operation, positionals, values, control) {
   if (operation === 'detail') {
     const selections = [values['spec-id'], values.spec, values.labels, values.default].filter(value => value !== undefined);
     if (selections.length !== 1) throw new TaobaoError('INVALID_ARGUMENT', 'detail 须且只能提供 --spec-id、--spec、--labels、--default 之一。');
-    const spec = values['spec-id'] ? { specId: values['spec-id'] }
-      : values.spec ? parseJsonInput(values.spec, '--spec')
-      : values.labels ? { labels: parseJsonInput(values.labels, '--labels') }
+    const spec: SpecInput = values['spec-id'] ? { specId: values['spec-id'] }
+      : values.spec ? (parseJsonInput(values.spec, '--spec') as SpecInput)
+      : values.labels ? { labels: parseJsonInput(values.labels, '--labels') as string[] }
       : { kind: 'default' };
-    let result = await adapter.getDetail(positionals[1], spec, queryOptions, control.signal);
+    const itemId = positionals[1] ?? '';
+    let result = await adapter.getDetail(itemId, spec, queryOptions as Record<string, unknown>, control.signal);
     if (values.reviews) {
-      const summary = await adapter.getReviewSummary(positionals[1], control.signal);
+      const summary = await adapter.getReviewSummary(itemId, control.signal);
       result = { ...result, data: { ...result.data, reviewSummary: summary.data }, meta: { ...result.meta, rateProvider: summary.meta.provider } };
     }
     return envelope('detail', result);
@@ -182,9 +231,12 @@ async function mtopCommand(operation, positionals, values, control) {
   if (!values.file) throw new TaobaoError('INVALID_ARGUMENT', 'batch 必须指定 --file。');
   const input = await readBatchFile(values.file);
   const outputPath = values.output ? resolve(values.output) : null;
-  const onProgress = outputPath ? async progress => {
+  const onProgress = outputPath ? async (progress: BatchProgress): Promise<void> => {
     await mkdir(dirname(outputPath), { recursive: true });
-    const body = JSON.stringify({ ok: false, operation: 'batch', partial: true, data: progress, error: null, meta: { provider: 'mtop-http', observedAt: new Date().toISOString() } }, null, 2) + '\n';
+    const body = JSON.stringify({
+      ok: false, operation: 'batch', partial: true, data: progress, error: null,
+      meta: { provider: 'mtop-http', observedAt: new Date().toISOString() },
+    }, null, 2) + '\n';
     const temp = `${outputPath}.${process.pid}.${Date.now()}.tmp`;
     await writeFile(temp, body);
     try { await rename(temp, outputPath); }
@@ -193,36 +245,43 @@ async function mtopCommand(operation, positionals, values, control) {
   return envelope('batch', await adapter.batch(input, control.signal, { onProgress }));
 }
 
-export async function main() {
+export async function main(): Promise<void> {
   let operation = 'cli';
   try {
-    const { values, positionals } = parseArgs({ allowPositionals: true, options: {
-      help: { type: 'boolean', short: 'h' }, limit: { type: 'string' }, page: { type: 'string' }, sort: { type: 'string' },
-      pages: { type: 'string' }, tab: { type: 'string' },
-      'spec-id': { type: 'string' }, spec: { type: 'string' }, labels: { type: 'string' }, default: { type: 'boolean' },
-      'sku-id': { type: 'string' }, quantity: { type: 'string' },
-      reviews: { type: 'boolean' },
-      file: { type: 'string' }, output: { type: 'string' },
-      'cookie-string': { type: 'string' }, stdin: { type: 'boolean' },
-      'runtime-dir': { type: 'string' }, timeout: { type: 'string' },
-    } });
-    if (values.help || !positionals.length) { console.log(help); return; }
-    operation = positionals[0];
+    const { values, positionals } = parseArgs({
+      allowPositionals: true,
+      options: {
+        help: { type: 'boolean', short: 'h' }, limit: { type: 'string' }, page: { type: 'string' }, sort: { type: 'string' },
+        pages: { type: 'string' }, tab: { type: 'string' },
+        'spec-id': { type: 'string' }, spec: { type: 'string' }, labels: { type: 'string' }, default: { type: 'boolean' },
+        'sku-id': { type: 'string' }, quantity: { type: 'string' },
+        reviews: { type: 'boolean' },
+        file: { type: 'string' }, output: { type: 'string' },
+        'cookie-string': { type: 'string' }, stdin: { type: 'boolean' },
+        'runtime-dir': { type: 'string' }, timeout: { type: 'string' },
+      },
+    });
+    const cliValues = values as CliValues;
+    if (cliValues.help || !positionals.length) { console.log(help); return; }
+    operation = positionals[0] ?? 'cli';
     const controller = new AbortController();
-    const cancel = () => controller.abort();
+    const cancel = (): void => controller.abort();
     process.once('SIGINT', cancel);
-    let result;
+    let result: CliEnvelope<unknown, OperationMeta | null>;
     const control = { signal: controller.signal };
-    if (operation === 'sync-cookie') result = await syncCookie(values);
-    else if (['search', 'specs', 'detail', 'batch', 'orders', 'shop-search', 'cart-list', 'cart-add', 'cart-remove'].includes(operation)) result = await mtopCommand(operation, positionals, values, control);
-    else throw new TaobaoError('INVALID_ARGUMENT', `未知命令：${operation}。可用：search / specs / detail / shop-search / batch / orders / cart-list / cart-add / cart-remove / sync-cookie。`);
+    if (operation === 'sync-cookie') result = await syncCookie(cliValues);
+    else if (['search', 'specs', 'detail', 'batch', 'orders', 'shop-search', 'cart-list', 'cart-add', 'cart-remove'].includes(operation)) {
+      result = await mtopCommand(operation, positionals, cliValues, control);
+    } else {
+      throw new TaobaoError('INVALID_ARGUMENT', `未知命令：${operation}。可用：search / specs / detail / shop-search / batch / orders / cart-list / cart-add / cart-remove / sync-cookie。`);
+    }
     process.removeListener('SIGINT', cancel);
     const rendered = JSON.stringify(result, null, 2) + '\n';
-    if (values.output) { const path = resolve(values.output); await mkdir(dirname(path), { recursive: true }); await writeFile(path, rendered); }
+    if (cliValues.output) { const path = resolve(cliValues.output); await mkdir(dirname(path), { recursive: true }); await writeFile(path, rendered); }
     process.stdout.write(rendered);
     if (!result.ok) process.exitCode = 1;
-  } catch (error) {
+  } catch (error: unknown) {
     process.stdout.write(JSON.stringify(failure(operation, error), null, 2) + '\n');
-    process.exitCode = error.code === 'CANCELLED' ? 130 : 1;
+    process.exitCode = getErrorCode(error) === 'CANCELLED' ? 130 : 1;
   }
 }

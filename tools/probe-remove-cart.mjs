@@ -6,7 +6,7 @@
 //   keyname/type/events.deleteClick/hierarchy 结构，供构造删除 payload 参考。
 // 阶段 2（--do <cartId>）：真实删除。默认只做 dump。
 import { writeFile, mkdir } from 'node:fs/promises';
-import { MtopClient } from '../src/core/mtop-client.js';
+import { MtopClient } from '../build/core/mtop-client.js';
 
 const CART_REQUEST = {
   extraParams: { ecode: '1', AntiCreep: 'true', AntiFlood: 'true', LoginRequest: 'true', ttid: '##h5' },

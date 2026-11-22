@@ -1,6 +1,7 @@
 # Local dependencies, caches and generated releases (publish binaries in Releases).
 node_modules/
 /.cache/
+/build/
 /dist/
 /artifacts/
 coverage/

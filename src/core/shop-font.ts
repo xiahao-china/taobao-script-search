@@ -6,7 +6,7 @@
 import { inflateSync } from 'node:zlib';
 
 // Macintosh 标准序 258 个 glyph 名（post glyphNameIndex < 258 时按序号取名）。
-const MAC_GLYPH_NAMES = [
+const MAC_GLYPH_NAMES: readonly string[] = [
   '.notdef', '.null', 'nonmarkingreturn', 'space', 'exclam', 'quotedbl', 'numbersign',
   'dollar', 'percent', 'ampersand', 'quotesingle', 'parenleft', 'parenright', 'asterisk',
   'plus', 'comma', 'hyphen', 'period', 'slash', 'zero', 'one', 'two', 'three', 'four',
@@ -41,17 +41,17 @@ const MAC_GLYPH_NAMES = [
 ];
 
 // glyph 名 → 显示字符（缺省 null = 该码点丢弃）。
-const NAME2CHAR = {
+const NAME2CHAR: Readonly<Record<string, string>> = {
   zero: '0', one: '1', two: '2', three: '3', four: '4',
   five: '5', six: '6', seven: '7', eight: '8', nine: '9',
   period: '.', comma: ',',
 };
 
-const u16 = (buf, off) => buf.readUInt16BE(off);
-const u32 = (buf, off) => buf.readUInt32BE(off);
+const u16 = (buf: Buffer, off: number): number => buf.readUInt16BE(off);
+const u32 = (buf: Buffer, off: number): number => buf.readUInt32BE(off);
 
 // WOFF1 表目录：tag/offset/compLength/origLength/origChecksum 各 4 字节。
-function woffTable(buffer, tag) {
+function woffTable(buffer: Buffer, tag: string): Buffer {
   if (buffer.readUInt32BE(0) !== 0x774F4646) throw new Error('非 WOFF1 字体（签名不符）');
   const numTables = u16(buffer, 12);
   for (let i = 0; i < numTables; i++) {
@@ -68,9 +68,9 @@ function woffTable(buffer, tag) {
 }
 
 // cmap：优先 format12（group 三元组），退回 format4（segment 二分）。
-function parseCmap(cmap) {
+function parseCmap(cmap: Buffer): Map<number, number> {
   const numTables = u16(cmap, 2);
-  let sub = null;
+  let sub: [number, number, number] | null = null;
   for (let i = 0; i < numTables; i++) {
     const base = 4 + i * 8;
     const platform = u16(cmap, base);
@@ -84,9 +84,9 @@ function parseCmap(cmap) {
   throw new Error('cmap 无可解析子表（仅支持 format 4/12）');
 }
 
-function parseCmap12(cmap, offset) {
+function parseCmap12(cmap: Buffer, offset: number): Map<number, number> {
   const nGroups = u32(cmap, offset + 12);
-  const map = new Map();
+  const map = new Map<number, number>();
   for (let i = 0; i < nGroups; i++) {
     const base = offset + 16 + i * 12;
     const start = u32(cmap, base);
@@ -97,14 +97,14 @@ function parseCmap12(cmap, offset) {
   return map;
 }
 
-function parseCmap4(cmap, offset) {
+function parseCmap4(cmap: Buffer, offset: number): Map<number, number> {
   const segCountX2 = u16(cmap, offset + 6);
   const segCount = segCountX2 / 2;
   const endCodes = offset + 14;
   const startCodes = endCodes + segCountX2 + 2;
   const idDeltas = startCodes + segCountX2;
   const idRangeOffsets = idDeltas + segCountX2;
-  const map = new Map();
+  const map = new Map<number, number>();
   for (let seg = 0; seg < segCount; seg++) {
     const end = u16(cmap, endCodes + seg * 2);
     const start = u16(cmap, startCodes + seg * 2);
@@ -112,7 +112,7 @@ function parseCmap4(cmap, offset) {
     const rangeOffset = u16(cmap, idRangeOffsets + seg * 2);
     if (start === 0xFFFF) continue;
     for (let cp = start; cp <= end; cp++) {
-      let glyph;
+      let glyph: number;
       if (rangeOffset === 0) glyph = (cp + delta) & 0xFFFF;
       else {
         const addr = idRangeOffsets + seg * 2 + rangeOffset + (cp - start) * 2;
@@ -126,45 +126,43 @@ function parseCmap4(cmap, offset) {
 }
 
 // post v2.0：32 字节头 + numGlyphs + glyphNameIndex[] + 自定义名 pascal 串。
-function parsePostNames(post, numGlyphsFromMaxp) {
+function parsePostNames(post: Buffer): (string | null)[] {
   const version = u32(post, 0);
   if (version !== 0x00020000) throw new Error(`post 表版本 ${version.toString(16)} 非 2.0，glyph 名不可用`);
   const numGlyphs = u16(post, 32);
-  const names = new Array(numGlyphs);
+  const names: (string | null)[] = new Array<string | null>(numGlyphs);
   const indexBase = 34;
   // 自定义名串区起点：glyphNameIndex 之后。
   let strBase = indexBase + numGlyphs * 2;
-  const custom = [];
+  const custom: string[] = [];
   while (strBase < post.length) {
-    const len = post[strBase++];
+    const len = post[strBase++] ?? 0;
     custom.push(post.toString('latin1', strBase, strBase + len));
     strBase += len;
   }
   for (let i = 0; i < numGlyphs; i++) {
     const idx = u16(post, indexBase + i * 2);
-    names[i] = idx < 258 ? MAC_GLYPH_NAMES[idx] : custom[idx - 258] ?? null;
+    names[i] = idx < 258 ? (MAC_GLYPH_NAMES[idx] ?? null) : (custom[idx - 258] ?? null);
   }
-  // numGlyphs 与 maxp 不一致时以 post 为准（names 数组即按 post 生成）。
-  void numGlyphsFromMaxp;
   return names;
 }
 
 // 主入口：WOFF1 buffer → Map<码点, 显示字符>（只收数字/小数点/逗号）。
-export function parsePriceFontMap(buffer) {
+export function parsePriceFontMap(buffer: Buffer): Map<number, string> {
   const cmap = parseCmap(woffTable(buffer, 'cmap'));
   const post = woffTable(buffer, 'post');
   const names = parsePostNames(post);
-  const map = new Map();
+  const map = new Map<number, string>();
   for (const [cp, glyphIndex] of cmap) {
     const name = names[glyphIndex];
-    const ch = name && Object.hasOwn(NAME2CHAR, name) ? NAME2CHAR[name] : null;
+    const ch = name && Object.hasOwn(NAME2CHAR, name) ? NAME2CHAR[name] ?? null : null;
     if (ch) map.set(cp, ch);
   }
   return map;
 }
 
 // HTML 里的 &#NNNNN; 实体串 → 明文（不在映射里的码点记 '?'，保持位数可对账）。
-export function decodeEntities(entities, fontMap) {
+export function decodeEntities(entities: string, fontMap: ReadonlyMap<number, string>): string {
   let out = '';
   for (const m of entities.matchAll(/&#(\d+);/g)) {
     out += fontMap.get(Number(m[1])) ?? '?';

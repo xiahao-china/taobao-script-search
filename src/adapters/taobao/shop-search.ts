@@ -12,7 +12,7 @@ import { readFile, writeFile, rename, rm, mkdir } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { TaobaoError, checkAbort, getErrorCode, getErrorMessage } from '../../core/errors.js';
 import { runtimePaths } from '../../core/config.js';
-import { loadCookies, saveCookies, mergeSetCookies, cookieHeader } from '../../core/cookie-store.js';
+import { loadCookies, saveCookies, mergeSetCookies, cookieHeader, cookieSummary } from '../../core/cookie-store.js';
 import { reserveSlot, appendRequestLog, withOperationLog, parseEnvMs } from '../../core/mtop-client.js';
 import { parsePriceFontMap, decodeEntities } from '../../core/shop-font.js';
 import { gbkEncode } from '../../core/gbk.js';
@@ -114,8 +114,19 @@ export function extractFontUrl(page: string): string | null {
   return url.startsWith('//') ? `https:${url}` : url;
 }
 
+const decodeHtmlText = (value: string): string => value
+  .replace(/&amp;/g, '&')
+  .replace(/&lt;/g, '<')
+  .replace(/&gt;/g, '>')
+  .replace(/&quot;/g, '"')
+  .replace(/&#39;/g, "'")
+  .replace(/&nbsp;/g, ' ')
+  .replace(/\s+/g, ' ')
+  .trim();
+
 // 商品块解析：按 <dl data-id> 切块，每块取 item-name/图片/销量/价格实体。
-// 价格实体依赖字体映射还原（fontMap 为 null 时价格置 null——混合策略）。
+// 价格实体依赖字体映射还原：存在价格实体但无字体映射或全部解为 '?' 时，
+// 统一返回 priceText=null 且 priceUnknown=true（混合策略，绝不臆造或透传 "????"）。
 export function parseShopSearch(body: string, fontMap: ReadonlyMap<number, string> | null): ParsedShopSearchPage {
   const parts = body.split(/<dl[^>]*data-id="(\d+)"/);
   const items: ShopSearchItem[] = [];
@@ -130,14 +141,17 @@ export function parseShopSearch(body: string, fontMap: ReadonlyMap<number, strin
     const sales = chunk.match(/class="sale-num"[^>]*>([^<]+)</)?.[1];
     const priceRaw = chunk.match(/class="c-price[^"]*"[^>]*>([^<]+)</)?.[1];
     const strikeRaw = chunk.match(/class="s-price[^"]*"[^>]*>([^<]+)</)?.[1];
-    const decodedPrice = priceRaw && fontMap ? decodeEntities(priceRaw, fontMap) : null;
+    const rawDecodedPrice = priceRaw && fontMap ? decodeEntities(priceRaw, fontMap) : null;
+    const priceAllUnknown = Boolean(priceRaw && (!fontMap || !rawDecodedPrice || /^\?+$/.test(rawDecodedPrice)));
+    const priceText = priceAllUnknown ? null : rawDecodedPrice;
+    const rawDecodedStrike = strikeRaw && fontMap ? decodeEntities(strikeRaw, fontMap) : null;
+    const strikethroughText = rawDecodedStrike && !/^\?+$/.test(rawDecodedStrike) ? rawDecodedStrike : null;
     items.push({
       itemId,
-      title: title ? title.replace(/\s+/g, ' ').trim() : null,
-      priceText: decodedPrice,
-      strikethroughText: strikeRaw && fontMap ? decodeEntities(strikeRaw, fontMap) : null,
-      // 解码失败的 '?' 保留位数可对账；全 '?' 视为未解出。
-      priceUnknown: Boolean(decodedPrice && /^\?+$/.test(decodedPrice)),
+      title: title ? decodeHtmlText(title) : null,
+      priceText,
+      strikethroughText,
+      priceUnknown: priceAllUnknown,
       salesText: sales ? sales.replace(/\s+/g, ' ').trim() : null,
       url: href ? `https:${href.startsWith('//') ? href : `//item.taobao.com/${href}`}`.replace('https:https:', 'https:') : `https://item.taobao.com/item.htm?id=${itemId}`,
       imageUrl: image ? (image.startsWith('//') ? `https:${image}` : image) : null,
@@ -189,7 +203,10 @@ export class ShopSearchAdapter {
   async fetchPage(url: string, { referer, signal, pace = true }: { referer?: string; signal?: AbortSignal; pace?: boolean } = {}): Promise<string> {
     checkAbort(signal);
     const store = await loadCookies(this.options.runtimeDir);
+    const summary = cookieSummary(store);
+    const waitStart = Date.now();
     if (pace) await reserveSlot(this.options.runtimeDir, this.minIntervalMs, this.jitterMs, signal);
+    const waitMs = Date.now() - waitStart;
     const headers: Record<string, string> = {
       'User-Agent': USER_AGENT,
       Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
@@ -207,8 +224,19 @@ export class ShopSearchAdapter {
     try {
       response = await this.fetch(url, { headers, redirect: 'manual', signal: fetchSignal });
     } catch (error: unknown) {
-      if (signal?.aborted) throw new TaobaoError('CANCELLED', '任务已取消。');
-      await appendRequestLog(this.options.runtimeDir, { t: started, ts: new Date(started).toISOString(), api: 'shop-page', ok: false, code: 'NETWORK_ERROR', url });
+      if (signal?.aborted) {
+        await appendRequestLog(this.options.runtimeDir, {
+          t: started, ts: new Date(started).toISOString(), api: 'shop-page',
+          cookieCount: summary.total, hasLogin: summary.hasLoginState,
+          waitMs, ms: Date.now() - started, ok: false, code: 'CANCELLED', url,
+        });
+        throw new TaobaoError('CANCELLED', '任务已取消。');
+      }
+      await appendRequestLog(this.options.runtimeDir, {
+        t: started, ts: new Date(started).toISOString(), api: 'shop-page',
+        cookieCount: summary.total, hasLogin: summary.hasLoginState,
+        waitMs, ms: Date.now() - started, ok: false, code: 'NETWORK_ERROR', url,
+      });
       throw new TaobaoError('NETWORK_ERROR', `店铺页请求失败：${getErrorMessage(error)}`);
     }
     mergeSetCookies(store, response.headers.getSetCookie());
@@ -216,10 +244,28 @@ export class ShopSearchAdapter {
     const buf = response.arrayBuffer ? await response.arrayBuffer() : new ArrayBuffer(0);
     const buffer = Buffer.from(buf);
     const text = GBK.decode(buffer);
+    const location = response.headers.get?.('location') || '';
+    const captchaHit = isCaptcha(text) || /_____tmd_____|punish/i.test(location);
+    const loginHit = !captchaHit && (isLoginWalled(text) || /login\.taobao\.com|login\.htm/i.test(location));
     await appendRequestLog(this.options.runtimeDir, {
-      t: started, ts: new Date(started).toISOString(), api: 'shop-page', ok: response.ok,
-      http: response.status, ms: Date.now() - started, bytes: buffer.length, url,
+      t: started, ts: new Date(started).toISOString(), api: 'shop-page',
+      cookieCount: summary.total, hasLogin: summary.hasLoginState,
+      waitMs, ms: Date.now() - started, bytes: buffer.length, http: response.status,
+      ...(location ? { location } : {}),
+      ok: response.ok && !captchaHit && !loginHit,
+      ...(captchaHit ? { code: 'RISK_CONTROL' } : loginHit ? { code: 'LOGIN_WALLED' } : {}),
+      url,
     });
+    if (response.status >= 300 && response.status < 400 && location) {
+      if (captchaHit) {
+        throw new TaobaoError('RISK_CONTROL', '店铺页被风控跳转至验证页（TMD/punish）。请在浏览器访问后重试。');
+      }
+      if (loginHit) {
+        throw new TaobaoError('AUTH_REQUIRED', '店铺页 302 跳转登录页：登录 Cookie 失效，请更新 cookie.json 后重试。');
+      }
+      throw new TaobaoError('SHOP_SEARCH_ERROR',
+        `店铺页返回 HTTP ${response.status} 重定向至 ${location}（天猫店或已迁移域名暂不支持淘宝 C 店 asynSearch 通道）。`);
+    }
     return text;
   }
 
@@ -297,12 +343,16 @@ export class ShopSearchAdapter {
         if (isCaptcha(raw)) throw new TaobaoError('RISK_CONTROL',
           'asynSearch 被风控拦截（TMD 滑块）。等待几分钟后重试；已有部分页数据时本次结果不返回。');
         if (isLoginWalled(raw)) {
-          if (cached?.wid && cache[shop.host]) {
+          if (cache[shop.host]) {
             delete cache[shop.host];
             await saveWidCache(this.options.runtimeDir, cache);
           }
+          if (widSource === 'page') {
+            throw new TaobaoError('AUTH_REQUIRED',
+              `刚从店铺页提取的 wid（${wid}）仍被 asynSearch 跳转登录页：登录态 Cookie 可能失效或不完整，请更新 cookie.json 后重试。`);
+          }
           throw new TaobaoError('SHOP_SEARCH_ERROR',
-            `asynSearch 返回登录墙：wid（${wid}）校验未通过，可能店铺已改版导致挂件号变更。缓存已清除，请重试一次（将重新提取 wid）。`);
+            `asynSearch 返回登录墙：缓存 wid（${wid}）校验未通过，可能店铺已改版导致挂件号变更。缓存已清除，请重试一次（将重新提取 wid）。`);
         }
         const body = parseJsonp(raw);
         if (!body) throw new TaobaoError('SHOP_SEARCH_ERROR', 'asynSearch 响应不是合法 JSONP，结构可能变化。');

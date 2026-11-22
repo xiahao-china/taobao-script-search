@@ -181,6 +181,7 @@ test('getDetail: 正常核价 + store/fansNum 合并 + 粉丝接口降级与风�
   assert.equal(d1.data.store?.isTmall, true);
   assert.equal(d1.data.store?.fansNum, 58000);
   assert.equal(d1.data.store?.goldenSeller, true);
+  assert.deepEqual(d1.data.shop, { sellerId: '1001', shopId: '2002', shopUrl: 'https://shop2002.taobao.com/' });
   assert.equal(d1.meta.coverage?.store, true);
 
   // 3b) 粉丝接口非致命失败 → 静默降级，detail 照常返回
@@ -368,12 +369,80 @@ test('ShopSearchAdapter: 多页合并、末页提前收尾、风控与 wid 失�
   const cacheAfter = JSON.parse(await readFile(join(runtimeDir, 'shop-wid.json'), 'utf8')) as Record<string, unknown>;
   assert.equal(cacheAfter['shop131282813.taobao.com'], undefined, 'wid 校验失败后必须清除旧缓存');
 
-  // 7c) 店铺页命中 TMD 且无缓存 → RISK_CONTROL
+  // 7c) 店铺页命中 TMD 且无缓存 → RISK_CONTROL，请求日志诚实记 ok:false, code:RISK_CONTROL
   const tmdFetch: FetchLike = async () => mockResponse('<html>_____tmd_____</html>');
   const shopTmd = new ShopSearchAdapter({ runtimeDir, fetch: tmdFetch });
   shopTmd.minIntervalMs = 0;
   shopTmd.jitterMs = 0;
   await assert.rejects(shopTmd.shopSearch('电阻', '131282813'), error => getErrorCode(error) === 'RISK_CONTROL');
+
+  // 7d) 刚提取的新 wid (widSource='page') 紧接着被 asynSearch 跳登录墙 → 清缓存并抛 AUTH_REQUIRED
+  const freshWidLoginFetch: FetchLike = async url => {
+    const href = String(url);
+    if (!href.includes('/i/asynSearch.htm')) return mockResponse('<input value="/i/asynSearch.htm?wid=54321&path=/search.htm"/>');
+    return mockResponse('<html><script>location="https://login.taobao.com/login.htm"</script></html>');
+  };
+  const shopFreshLogin = new ShopSearchAdapter({ runtimeDir, fetch: freshWidLoginFetch });
+  shopFreshLogin.minIntervalMs = 0;
+  shopFreshLogin.jitterMs = 0;
+  await assert.rejects(shopFreshLogin.shopSearch('电阻', '131282813'), error => getErrorCode(error) === 'AUTH_REQUIRED');
+  const cacheAfterFresh = JSON.parse(await readFile(join(runtimeDir, 'shop-wid.json'), 'utf8')) as Record<string, unknown>;
+  assert.equal(cacheAfterFresh['shop131282813.taobao.com'], undefined, '新 wid 命中登录墙后也应清除刚写入的缓存');
+
+  // 7e) 店铺页 302 跳转到天猫/其他域名时，给出明确重定向报错并在日志记录 location
+  const redirectFetch: FetchLike = async () => mockResponse('', {
+    status: 302,
+    headers: { location: 'https://demo.tmall.com/search.htm' },
+  });
+  const shopRedirect = new ShopSearchAdapter({ runtimeDir, fetch: redirectFetch });
+  shopRedirect.minIntervalMs = 0;
+  shopRedirect.jitterMs = 0;
+  await assert.rejects(
+    shopRedirect.shopSearch('电阻', '178030413'),
+    error => getErrorCode(error) === 'SHOP_SEARCH_ERROR' && /demo\.tmall\.com/.test(String(error)),
+  );
+
+  const reqLogs = (await readFile(join(runtimeDir, 'log', 'mtop-request-log.jsonl'), 'utf8'))
+    .trim().split('\n').map(l => JSON.parse(l) as { api: string; ok: boolean; code?: string; waitMs?: number; cookieCount?: number; hasLogin?: boolean; location?: string });
+  assert.ok(reqLogs.some(e => e.api === 'shop-page' && e.ok === false && e.code === 'RISK_CONTROL' && typeof e.waitMs === 'number' && e.hasLogin === true));
+  assert.ok(reqLogs.some(e => e.api === 'shop-page' && e.ok === false && e.code === 'LOGIN_WALLED'));
+  assert.ok(reqLogs.some(e => e.api === 'shop-page' && e.location === 'https://demo.tmall.com/search.htm'));
+});
+
+// ── 7b. MtopAdapter.getOrders 多页合并下沉到 SDK 层 ──
+test('getOrders: SDK 支持 pages 多页合并、遇末页/NO_RESULTS 自动收尾且操作日志只记 1 条', async () => {
+  const base = await makeTempDir('tb-orders-multi-');
+  const runtimeDir = join(base, '.runtime');
+  const makePage = (pageNo: number, totalPage: number, orderId: string) => ({
+    data: {
+      meta: { page: { fields: { currentPage: pageNo, totalPage, pageSize: 15, totalNumber: 30 } } },
+      group: [{
+        [orderId]: [
+          { cellType: 'storage', cellData: [{ tag: 'storage', fields: { sellerNick: '店', subAuctionIds: [1001] } }] },
+          { cellType: 'head', cellData: [{ tag: 'seller', fields: { shopName: '测试店' } }, { tag: 'status', fields: { text: '交易成功' } }] },
+          { cellType: 'sub', cellData: [{ tag: 'item', fields: { title: `商品${pageNo}`, quantity: '1', priceInfo: { actualTotalFee: '￥1.00' } } }] },
+          { cellType: 'pay', cellData: [{ tag: 'pay', fields: { actualFee: { value: '￥1.00' } } }] },
+        ],
+      }],
+    },
+  });
+  const c1 = stubClient([makePage(1, 2, '10000000000000001'), makePage(2, 2, '10000000000000002')]);
+  const a1 = new MtopAdapter({ client: c1, runtimeDir });
+  const r1 = await a1.getOrders({ page: 1, pages: 5 });
+  assert.equal(c1.calls.length, 2, '到达 totalPage=2 自动停止');
+  assert.deepEqual(r1.data.orders.map(o => o.orderId), ['10000000000000001', '10000000000000002']);
+  const opLogs = (await readFile(join(runtimeDir, 'log', 'mtop-operation-log.jsonl'), 'utf8')).trim().split('\n');
+  assert.equal(opLogs.length, 1, '多页合并在操作日志中应为 1 条完整的 orders 记录');
+
+  // 非首页翻页遇 NO_RESULTS → 保留已拉取页正常返回
+  const c2 = stubClient([makePage(1, 5, '20000000000000001'), { data: { meta: {}, group: [] } }]);
+  const a2 = new MtopAdapter({ client: c2, runtimeDir });
+  const r2 = await a2.getOrders({ page: 1, pages: 3 });
+  assert.equal(r2.data.orders.length, 1);
+
+  // 非法 pages 校验
+  await assert.rejects(a1.getOrders({ page: 1, pages: 0 }), error => getErrorCode(error) === 'INVALID_ARGUMENT');
+  await assert.rejects(a1.getOrders({ page: 1, pages: 51 }), error => getErrorCode(error) === 'INVALID_ARGUMENT');
 });
 
 // ── 8. CLI 端到端集成测试（真实子进程 node bin/taobao.js）──

@@ -12,8 +12,6 @@ import type {
   CliEnvelope,
   CookieSummary,
   OperationMeta,
-  OrderRecord,
-  OrdersData,
   SdkResult,
   SearchOptions,
   SearchSort,
@@ -180,27 +178,10 @@ async function mtopCommand(
   if (operation === 'orders') {
     const page = Number(values.page || 1);
     const pages = Number(values.pages || 1);
-    if (!Number.isInteger(pages) || pages < 1 || pages > 50) throw new TaobaoError('INVALID_ARGUMENT', 'pages 须为 1–50 的整数。');
-    if (pages === 1) return envelope('orders', await adapter.getOrders({ page, ...(values.tab ? { tab: values.tab } : {}) }, control.signal));
-    // 连续翻页：逐页请求合并。空页即止；有分页元数据时到 totalPage 提前收尾；
-    // 翻过最后一页时接口会抛 NO_RESULTS——非首轮捕获后视为正常到末页，保留已拉取数据。
-    const merged: OrderRecord[] = [];
-    let last: SdkResult<OrdersData> | null = null;
-    for (let offset = 0; offset < pages; offset++) {
-      let result: SdkResult<OrdersData>;
-      try {
-        result = await adapter.getOrders({ page: page + offset, ...(values.tab ? { tab: values.tab } : {}) }, control.signal);
-      } catch (error: unknown) {
-        if (getErrorCode(error) === 'NO_RESULTS' && offset > 0 && last) break;
-        throw error;
-      }
-      last = result;
-      merged.push(...result.data.orders);
-      const totalPage = result.data.pagination?.totalPage;
-      if (!result.data.orders.length || (typeof totalPage === 'number' && Number.isInteger(totalPage) && page + offset >= totalPage)) break;
-    }
-    if (!last) throw new TaobaoError('NO_RESULTS', '订单接口未返回订单数据。');
-    return envelope('orders', { data: { ...last.data, page, orders: merged }, meta: last.meta });
+    return envelope('orders', await adapter.getOrders(
+      { page, pages, ...(values.tab ? { tab: values.tab } : {}) },
+      control.signal,
+    ));
   }
   if (operation === 'cart-list') return envelope('cart-list', await adapter.getCartList(control.signal));
   if (operation === 'cart-add') {
@@ -267,15 +248,20 @@ export async function main(): Promise<void> {
     const controller = new AbortController();
     const cancel = (): void => controller.abort();
     process.once('SIGINT', cancel);
+    process.once('SIGTERM', cancel);
     let result: CliEnvelope<unknown, OperationMeta | null>;
     const control = { signal: controller.signal };
-    if (operation === 'sync-cookie') result = await syncCookie(cliValues);
-    else if (['search', 'specs', 'detail', 'batch', 'orders', 'shop-search', 'cart-list', 'cart-add', 'cart-remove'].includes(operation)) {
-      result = await mtopCommand(operation, positionals, cliValues, control);
-    } else {
-      throw new TaobaoError('INVALID_ARGUMENT', `未知命令：${operation}。可用：search / specs / detail / shop-search / batch / orders / cart-list / cart-add / cart-remove / sync-cookie。`);
+    try {
+      if (operation === 'sync-cookie') result = await syncCookie(cliValues);
+      else if (['search', 'specs', 'detail', 'batch', 'orders', 'shop-search', 'cart-list', 'cart-add', 'cart-remove'].includes(operation)) {
+        result = await mtopCommand(operation, positionals, cliValues, control);
+      } else {
+        throw new TaobaoError('INVALID_ARGUMENT', `未知命令：${operation}。可用：search / specs / detail / shop-search / batch / orders / cart-list / cart-add / cart-remove / sync-cookie。`);
+      }
+    } finally {
+      process.removeListener('SIGINT', cancel);
+      process.removeListener('SIGTERM', cancel);
     }
-    process.removeListener('SIGINT', cancel);
     const rendered = JSON.stringify(result, null, 2) + '\n';
     if (cliValues.output) { const path = resolve(cliValues.output); await mkdir(dirname(path), { recursive: true }); await writeFile(path, rendered); }
     process.stdout.write(rendered);

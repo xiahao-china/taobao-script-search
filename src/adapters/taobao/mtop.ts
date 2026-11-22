@@ -403,6 +403,7 @@ export class MtopAdapter {
         title: catalog.item?.title ? stripTags(catalog.item.title) : null,
         url: `https://item.taobao.com/item.htm?id=${itemId}`,
         shopName: catalog.item?.shopName || null,
+        shop: catalog.shop ?? null,
         store: catalog.store ?? null,
         price: {
           amount: price.amount, currency: price.currency, basis: price.basis, display: price.display,
@@ -462,22 +463,53 @@ export class MtopAdapter {
   }
 
   // 购物记录（已买到的宝贝）。服务端固定每页 15 条；page 为正整数，
+  // pages（1–50，默认 1）支持从 page 起连续翻页合并（页间隔走全局限速），
   // tab 为订单页签（all/...），缺省 all。
   async getOrders(options: OrdersOptions = {}, signal?: AbortSignal): Promise<SdkResult<OrdersData>> {
-    const params = { page: 1, tab: 'all', ...options };
+    const params = { page: 1, pages: 1, tab: 'all', ...options };
     if (!Number.isInteger(params.page) || params.page < 1) {
       throw new TaobaoError('INVALID_ARGUMENT', 'page 须为正整数。');
+    }
+    if (!Number.isInteger(params.pages) || params.pages < 1 || params.pages > 50) {
+      throw new TaobaoError('INVALID_ARGUMENT', 'pages 须为 1–50 的整数。');
     }
     if (!ORDER_TAB_PATTERN.test(params.tab)) {
       throw new TaobaoError('INVALID_ARGUMENT', 'tab 须为 2–20 位小写字母/下划线（已验证的值：all；其他页签码未经实测）。');
     }
-    return this.withLog('orders', { page: params.page, tab: params.tab }, async () => {
-      const payload = await this.client.request(ORDER_API[0], ORDER_API[1], {
-        spm: 'a2141.7756461.2.6', page: params.page, tabCode: params.tab, appVersion: '1.0', appName: 'tborder',
-      }, { signal, ...ORDER_REQUEST });
-      const { orders, pagination } = assertOrdersPayload(payload);
+    return this.withLog('orders', { page: params.page, pages: params.pages, tab: params.tab }, async () => {
+      const fetchOne = async (pageNo: number) => {
+        const payload = await this.client.request(ORDER_API[0], ORDER_API[1], {
+          spm: 'a2141.7756461.2.6', page: pageNo, tabCode: params.tab, appVersion: '1.0', appName: 'tborder',
+        }, { signal, ...ORDER_REQUEST });
+        return assertOrdersPayload(payload);
+      };
+      if (params.pages === 1) {
+        const { orders, pagination } = await fetchOne(params.page);
+        return {
+          data: { page: params.page, tab: params.tab, orders, pagination },
+          meta: { provider: 'mtop-http-orders', observedAt: new Date().toISOString() },
+        };
+      }
+      // 连续翻页：逐页请求合并。空页即止；有分页元数据时到 totalPage 提前收尾；
+      // 翻过最后一页时接口会抛 NO_RESULTS——非首轮捕获后视为正常到末页，保留已拉取数据。
+      const merged = [];
+      let lastPagination = null;
+      for (let offset = 0; offset < params.pages; offset++) {
+        let pageResult;
+        try {
+          pageResult = await fetchOne(params.page + offset);
+        } catch (error: unknown) {
+          if (getErrorCode(error) === 'NO_RESULTS' && offset > 0 && lastPagination) break;
+          throw error;
+        }
+        lastPagination = pageResult.pagination;
+        merged.push(...pageResult.orders);
+        const totalPage = pageResult.pagination.totalPage;
+        if (!pageResult.orders.length || (typeof totalPage === 'number' && Number.isInteger(totalPage) && params.page + offset >= totalPage)) break;
+      }
+      if (!lastPagination) throw new TaobaoError('NO_RESULTS', '订单接口未返回订单数据。');
       return {
-        data: { page: params.page, tab: params.tab, orders, pagination },
+        data: { page: params.page, tab: params.tab, orders: merged, pagination: lastPagination },
         meta: { provider: 'mtop-http-orders', observedAt: new Date().toISOString() },
       };
     });

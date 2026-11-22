@@ -5,6 +5,38 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.1] - 2026-11-22
+
+### Fixed
+
+- **`shop-search` contract, HTML entity decoding & 302 handling (`src/adapters/taobao/shop-search.ts`)**:
+  - Aligned `priceText` / `priceUnknown` with documented behavior: when a price
+    node exists in HTML but the font map is missing or every glyph decodes to
+    `?`, returns `priceText: null` and `priceUnknown: true` (same `null` guard
+    for all-`?` `strikethroughText`); partial decodes (e.g. `"1?"`) remain
+    visible for reconciliation.
+  - Decoded common HTML entities (`&amp;`, `&quot;`, `&#39;`, `&lt;`, `&gt;`,
+    `&nbsp;`) in item titles.
+  - Improved `asynSearch` login-wall attribution: always clears `shop-wid.json`
+    entry on failure, and raises `AUTH_REQUIRED` (instead of blaming a stale
+    cache) when a freshly extracted `wid` (`widSource === 'page'`) immediately
+    hits a login redirect.
+  - Added explicit HTTP 3xx handling and `location`/`waitMs`/`cookieCount`/
+    `hasLogin` logging to `fetchPage` so Tmall or domain redirects report the
+    target URL clearly instead of a generic missing-`wid` error.
+- **Exposed `detail.data.shop` (`src/adapters/taobao/mtop.ts`, `src/types.ts`)**:
+  `detailFromCatalog` now outputs the already-extracted `shop` object
+  (`{ sellerId?, shopId?, shopUrl? }` or `null`) so callers can chain directly
+  into `shop-search`.
+- **Unified multi-page `orders` in SDK (`src/adapters/taobao/mtop.ts`, `src/cli.ts`)**:
+  moved `pages` (1–50) pagination from `cli.ts` into `MtopAdapter.getOrders`,
+  enabling SDK multi-page queries and recording one merged `orders` entry per
+  call in `.runtime/log/mtop-operation-log.jsonl`.
+- **CLI signal handling & Skill cookie fallback (`src/cli.ts`, `skill/scripts/taobao.mjs`)**:
+  `cli.ts` now handles `SIGTERM` alongside `SIGINT` with `finally` cleanup;
+  `skill/scripts/taobao.mjs` checks `<mainProject>/cookie.json` before falling
+  back to `<mainProject>/.runtime/mtop-cookies.json`; test count 52 -> 53.
+
 ## [0.9.0] - 2026-11-22
 
 ### Changed

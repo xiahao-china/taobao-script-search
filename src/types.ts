@@ -377,6 +377,7 @@ export interface DetailData {
   title: string | null;
   url: string;
   shopName: string | null;
+  shop: CatalogShopInfo | null;
   store: StoreRecord | null;
   price: DetailPrice;
   stock: number | string | null;
@@ -418,6 +419,7 @@ export interface OrdersPagination {
 
 export interface OrdersOptions {
   page?: number;
+  pages?: number;
   tab?: string;
 }
 

@@ -86,18 +86,23 @@ test('shopSearch 解析: 商品块字段齐全，价格经字体映射还原', (
   assert.equal(first.priceUnknown, false);
 });
 
-test('shopSearch 解析: 无字体映射时价格置 null（混合策略），坏实体按未知位数标记', () => {
-  const body = `<dl class="item" data-id="1"><a class="item-name" href="//item.taobao.com/item.htm?id=1">X</a>
-    <span class="c-price">&#65001;&#99999999;</span></dl>`;
+test('shopSearch 解析: 无字体/全未知时 priceText=null 且 priceUnknown=true，标题 HTML 实体解码', () => {
+  const body = `<dl class="item" data-id="1"><a class="item-name" href="//item.taobao.com/item.htm?id=1"> 0805&amp;0603 &quot;国标&quot;&nbsp;电阻 </a>
+    <span class="c-price">&#65001;&#99999999;</span><span class="s-price">&#99999999;</span></dl>`;
   const noFont = parseShopSearch(body, null);
+  assert.equal(noFont.items[0]?.title, '0805&0603 "国标" 电阻', 'HTML 实体应解码并归一化空白');
   assert.equal(noFont.items[0]?.priceText, null, 'fontMap 缺失 → null，不臆造');
-  assert.equal(noFont.items[0]?.priceUnknown, false);
+  assert.equal(noFont.items[0]?.priceUnknown, true, '存在价格实体但无字体映射 → priceUnknown=true');
   const withFont = parseShopSearch(body, new Map([[65001, '1']]));
-  assert.equal(withFont.items[0]?.priceText, '1?', '映射缺失的码点记 ?，保持位数可对账');
+  assert.equal(withFont.items[0]?.priceText, '1?', '部分解出保留 ? 对账');
   assert.equal(withFont.items[0]?.priceUnknown, false, '部分解出不算全未知');
+  assert.equal(withFont.items[0]?.strikethroughText, null, '划线价全未知时返回 null 而非 ?');
   const allUnknown = parseShopSearch('<dl class="item" data-id="2"><span class="c-price">&#99999999;</span></dl>', new Map());
-  assert.equal(allUnknown.items[0]?.priceText, '?');
+  assert.equal(allUnknown.items[0]?.priceText, null, '完全未解出的价格必须返回 null（与文档契约一致）');
   assert.equal(allUnknown.items[0]?.priceUnknown, true, '完全未解出的价格标记 unknown');
+  const noPrice = parseShopSearch('<dl class="item" data-id="3"><a class="item-name" href="//item.taobao.com/item.htm?id=3">无价</a></dl>', new Map());
+  assert.equal(noPrice.items[0]?.priceText, null);
+  assert.equal(noPrice.items[0]?.priceUnknown, false, 'HTML 无价格节点时不算解码失败');
 });
 
 // ── 字体解码器：合成 WOFF 无法凭空构造（含 zlib 压缩与表布局），

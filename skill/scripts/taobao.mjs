@@ -16,9 +16,11 @@ const cli = join(skillDir, 'scripts', 'taobao-cli', 'bin', 'taobao.js');
 
 if (!process.env.TAOBAO_COOKIE_FILE) {
   const skillCookie = join(skillDir, 'cookie.json');
-  const mainCookie = join(mainProject, '.runtime', 'mtop-cookies.json');
+  const mainRootCookie = join(mainProject, 'cookie.json');
+  const mainRuntimeCookie = join(mainProject, '.runtime', 'mtop-cookies.json');
   if (existsSync(skillCookie)) process.env.TAOBAO_COOKIE_FILE = skillCookie;
-  else if (existsSync(mainCookie)) process.env.TAOBAO_COOKIE_FILE = mainCookie;
+  else if (existsSync(mainRootCookie)) process.env.TAOBAO_COOKIE_FILE = mainRootCookie;
+  else if (existsSync(mainRuntimeCookie)) process.env.TAOBAO_COOKIE_FILE = mainRuntimeCookie;
 }
 if (!process.env.TAOBAO_SEARCH_RUNTIME_DIR && existsSync(join(mainProject, '.runtime'))) {
   process.env.TAOBAO_SEARCH_RUNTIME_DIR = join(mainProject, '.runtime');

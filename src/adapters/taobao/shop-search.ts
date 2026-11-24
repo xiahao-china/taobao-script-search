@@ -189,7 +189,7 @@ export class ShopSearchAdapter {
   constructor(options: ShopSearchAdapterOptions = {}) {
     this.options = { runtimeDir: null, timeoutMs: 20000, ...options };
     // 页面/搜索请求与 MTOP 网关共享全局限速占坑（跨进程令牌桶）。
-    this.minIntervalMs = parseEnvMs(process.env.TAOBAO_MTOP_MIN_INTERVAL_MS, 5000);
+    this.minIntervalMs = parseEnvMs(process.env.TAOBAO_MTOP_MIN_INTERVAL_MS, 10000);
     this.jitterMs = parseEnvMs(process.env.TAOBAO_MTOP_JITTER_MS, 5000);
     this.fetch = options.fetch || (globalThis.fetch as unknown as FetchLike);
   }

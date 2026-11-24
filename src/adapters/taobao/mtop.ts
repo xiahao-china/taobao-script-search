@@ -557,9 +557,9 @@ export class MtopAdapter {
           'Cookie 缺少 _tb_token_（PC 登录 CSRF 令牌），无法加购。请从浏览器重新复制完整 Cookie 并更新 cookie.json。');
       }
       checkAbort(signal);
-      // 限速与超时配置均以 MtopClient.options 为准（默认 5000+5000ms / 15000ms），
+      // 限速与超时配置均以 MtopClient.options 为准（默认 10000+5000ms / 15000ms），
       // 缺省再回退 adapter.options，避免默认调用时 minIntervalMs 为 undefined 击穿全局限速。
-      const minIntervalMs = this.client.options?.minIntervalMs ?? this.options.minIntervalMs ?? 5000;
+      const minIntervalMs = this.client.options?.minIntervalMs ?? this.options.minIntervalMs ?? 10000;
       const jitterMs = this.client.options?.jitterMs ?? this.options.jitterMs ?? 5000;
       const waitStart = Date.now();
       await reserveSlot(this.options.runtimeDir, minIntervalMs, jitterMs, signal);

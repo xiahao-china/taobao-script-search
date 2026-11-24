@@ -206,7 +206,7 @@ export class MtopClient implements MtopClientLike {
     this.options = {
       runtimeDir: null,
       timeoutMs: 15000,
-      minIntervalMs: parseEnvMs(process.env.TAOBAO_MTOP_MIN_INTERVAL_MS, 5000),
+      minIntervalMs: parseEnvMs(process.env.TAOBAO_MTOP_MIN_INTERVAL_MS, 10000),
       jitterMs: parseEnvMs(process.env.TAOBAO_MTOP_JITTER_MS, 5000),
       ...options,
     };
